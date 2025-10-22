@@ -162,7 +162,7 @@ export class TerminalManager {
       const terminal = new XtermTerminal({
         cols: 80,
         rows: 24,
-        scrollback: 10000,
+        scrollback: 5000,
         allowProposedApi: true,
         convertEol: true,
       });

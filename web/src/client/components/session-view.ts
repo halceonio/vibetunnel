@@ -24,6 +24,7 @@ import { GitService } from '../services/git-service.js';
 import { createLogger } from '../utils/logger.js';
 import { TERMINAL_IDS } from '../utils/terminal-constants.js';
 import type { TerminalThemeId } from '../utils/terminal-themes.js';
+const DEFAULT_TERMINAL_HISTORY_LIMIT = 5000;
 // Manager imports
 import { ConnectionManager } from './session-view/connection-manager.js';
 import {
@@ -98,6 +99,12 @@ export class SessionView extends LitElement {
   private boundHandleTerminalInput = this.handleTerminalInput.bind(this);
   private boundHandleTerminalResize = this.handleTerminalResize.bind(this);
   private boundHandleTerminalReady = this.handleTerminalReady.bind(this);
+  private boundHandleTerminalHistory = this.handleTerminalHistory.bind(this);
+
+  private showFullLogModal = false;
+  private fullLogLoading = false;
+  private fullLogError: string | null = null;
+  private fullLogContent = '';
 
   private instanceId = `session-view-${Math.random().toString(36).substr(2, 9)}`;
   private _updateTerminalTransformTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -866,6 +873,70 @@ export class SessionView extends LitElement {
     this.ensureTerminalInitialized();
   }
 
+  private handleTerminalHistory(
+    event: CustomEvent<{ exceeded: boolean; totalRows: number; limit: number }>
+  ) {
+    if (!event.detail) {
+      return;
+    }
+
+    if (event.detail.exceeded) {
+      this.uiStateManager.setHasTruncatedHistory(true);
+    } else {
+      this.uiStateManager.setHasTruncatedHistory(false);
+    }
+  }
+
+  private async openFullLogModal() {
+    if (!this.session) {
+      return;
+    }
+
+    this.showFullLogModal = true;
+    this.fullLogLoading = true;
+    this.fullLogError = null;
+    this.fullLogContent = '';
+    this.requestUpdate();
+
+    try {
+      const response = await fetch(`/api/sessions/${this.session.id}/text`);
+      if (!response.ok) {
+        throw new Error(`Failed to load session log (status ${response.status})`);
+      }
+      this.fullLogContent = await response.text();
+    } catch (error) {
+      this.fullLogError = error instanceof Error ? error.message : String(error);
+    } finally {
+      this.fullLogLoading = false;
+      this.requestUpdate();
+    }
+  }
+
+  private closeFullLogModal() {
+    this.showFullLogModal = false;
+    this.requestUpdate();
+  }
+
+  private downloadFullLog() {
+    if (!this.fullLogContent) {
+      return;
+    }
+    try {
+      const blob = new Blob([this.fullLogContent], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const anchor = document.createElement('a');
+      const sessionName = this.session?.name || 'session';
+      anchor.href = url;
+      anchor.download = `${sessionName.replace(/[^a-z0-9-_]+/gi, '_')}-log.txt`;
+      document.body.appendChild(anchor);
+      anchor.click();
+      document.body.removeChild(anchor);
+      URL.revokeObjectURL(url);
+    } catch (error) {
+      logger.warn('Failed to trigger log download', error);
+    }
+  }
+
   private updateTerminalTransform(): void {
     // Clear any existing timeout to debounce calls
     if (this._updateTerminalTransformTimeout) {
@@ -1036,6 +1107,114 @@ export class SessionView extends LitElement {
           min-height: 0; /* Critical for grid */
           contain: layout style paint; /* Isolate terminal updates */
         }
+
+        .terminal-history-banner {
+          position: relative;
+          display: flex;
+          align-items: center;
+          justify-content: space-between;
+          gap: 0.75rem;
+          padding: 0.6rem 0.9rem;
+          background: linear-gradient(135deg, rgba(var(--color-warning), 0.15), rgba(var(--color-warning), 0.05));
+          border-bottom: 1px solid rgba(var(--color-warning), 0.3);
+          backdrop-filter: blur(8px);
+          color: rgb(var(--color-warning));
+        }
+
+        .terminal-history-button {
+          background-color: rgb(var(--color-warning));
+          color: rgb(var(--color-bg));
+          font-family: inherit;
+          font-size: 0.75rem;
+          font-weight: 600;
+          padding: 0.25rem 0.75rem;
+          border-radius: 0.5rem;
+          border: none;
+          cursor: pointer;
+          transition: transform 0.15s ease, box-shadow 0.15s ease;
+        }
+
+        .terminal-history-button:hover {
+          transform: translateY(-1px);
+          box-shadow: 0 6px 14px rgba(var(--color-warning), 0.25);
+        }
+
+        .full-log-modal-backdrop {
+          position: fixed;
+          inset: 0;
+          background: rgba(10, 10, 10, 0.6);
+          backdrop-filter: blur(6px);
+          display: flex;
+          align-items: center;
+          justify-content: center;
+          padding: 1.5rem;
+          z-index: 30;
+        }
+
+        .full-log-modal {
+          width: min(960px, 100%);
+          max-height: 90vh;
+          background: rgb(var(--color-bg));
+          border-radius: 0.75rem;
+          box-shadow: 0 20px 45px rgba(0, 0, 0, 0.35);
+          display: flex;
+          flex-direction: column;
+          overflow: hidden;
+          border: 1px solid rgb(var(--color-border));
+        }
+
+        .full-log-modal header {
+          padding: 1rem 1.25rem;
+          border-bottom: 1px solid rgb(var(--color-border));
+          font-weight: 600;
+          display: flex;
+          justify-content: space-between;
+          align-items: center;
+        }
+
+        .full-log-content {
+          padding: 1rem 1.25rem;
+          overflow: auto;
+          background: rgb(var(--color-bg-secondary));
+          font-family: ui-monospace, SFMono-Regular, "SF Mono", Consolas, "Liberation Mono", Menlo, monospace;
+          font-size: 0.75rem;
+          line-height: 1.4;
+          white-space: pre;
+        }
+
+        .full-log-actions {
+          display: flex;
+          justify-content: flex-end;
+          gap: 0.75rem;
+          padding: 0.85rem 1.25rem;
+          border-top: 1px solid rgb(var(--color-border));
+          background: rgb(var(--color-bg));
+        }
+
+        .modal-button {
+          background: none;
+          border: 1px solid rgb(var(--color-border));
+          color: rgb(var(--color-primary));
+          font-family: inherit;
+          font-size: 0.8rem;
+          padding: 0.4rem 0.9rem;
+          border-radius: 0.5rem;
+          cursor: pointer;
+          transition: background 0.15s ease, color 0.15s ease;
+        }
+
+        .modal-button.primary {
+          background: rgb(var(--color-primary));
+          color: rgb(var(--color-bg));
+        }
+
+        .modal-button:hover {
+          background: rgba(var(--color-primary), 0.08);
+        }
+
+        .modal-button.primary:hover {
+          background: rgba(var(--color-primary), 0.9);
+        }
         
         /* Make terminal content 50px larger to prevent clipping */
         .terminal-area vibe-terminal,
@@ -1185,6 +1364,23 @@ export class SessionView extends LitElement {
               : uiState.viewMode === 'terminal'
                 ? html`
               <!-- Enhanced Terminal Component -->
+              ${
+                uiState.hasTruncatedHistory
+                  ? html`
+                    <div class="terminal-history-banner text-xs">
+                      <span class="truncate">
+                        Older output beyond ${DEFAULT_TERMINAL_HISTORY_LIMIT.toLocaleString()} lines is hidden for performance.
+                      </span>
+                      <button
+                        class="terminal-history-button"
+                        @click=${() => this.openFullLogModal()}
+                      >
+                        Show Full Log
+                      </button>
+                    </div>
+                  `
+                  : ''
+              }
               <terminal-renderer
                 id="${TERMINAL_IDS.SESSION_TERMINAL}"
                 .session=${this.session}
@@ -1198,6 +1394,7 @@ export class SessionView extends LitElement {
                 .onTerminalInput=${this.boundHandleTerminalInput}
                 .onTerminalResize=${this.boundHandleTerminalResize}
                 .onTerminalReady=${this.boundHandleTerminalReady}
+                .onTerminalHistory=${this.boundHandleTerminalHistory}
               ></terminal-renderer>
             `
                 : ''
@@ -1349,6 +1546,52 @@ export class SessionView extends LitElement {
               handleBack: () => this.handleBack(),
             }}
           ></overlays-container>
+          ${
+            this.showFullLogModal
+              ? html`
+                <div class="full-log-modal-backdrop">
+                  <div class="full-log-modal">
+                    <header>
+                      <span>Full Session Log</span>
+                      <button
+                        class="modal-button"
+                        @click=${() => this.closeFullLogModal()}
+                        ?disabled=${this.fullLogLoading}
+                      >
+                        Close
+                      </button>
+                    </header>
+                    <div class="flex-1 overflow-auto">
+                      ${this.fullLogLoading
+                        ? html`<div class="full-log-content">Loading full log…</div>`
+                        : this.fullLogError
+                          ? html`<div class="full-log-content" style="color: rgb(var(--color-warning));">${this.fullLogError}</div>`
+                          : html`
+                            <pre class="full-log-content">
+${this.fullLogContent || '(No output captured yet)'}
+                            </pre>
+                          `}
+                    </div>
+                    <div class="full-log-actions">
+                      <button
+                        class="modal-button"
+                        @click=${() => this.closeFullLogModal()}
+                      >
+                        Done
+                      </button>
+                      <button
+                        class="modal-button primary"
+                        @click=${() => this.downloadFullLog()}
+                        ?disabled=${this.fullLogLoading}
+                      >
+                        Download
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              `
+              : ''
+          }
         </div>
       </div>
       </div>

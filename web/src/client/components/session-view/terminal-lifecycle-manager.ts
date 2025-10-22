@@ -9,6 +9,7 @@ import type { Session } from '../../../shared/types.js';
 import { HttpMethod } from '../../../shared/types.js';
 import { authClient } from '../../services/auth-client.js';
 import { createLogger } from '../../utils/logger.js';
+import { getClientInstanceId } from '../../utils/client-instance-id.js';
 import type { TerminalThemeId } from '../../utils/terminal-themes.js';
 import type { Terminal } from '../terminal.js';
 import type { ConnectionManager } from './connection-manager.js';
@@ -41,6 +42,7 @@ export class TerminalLifecycleManager {
   private domElement: Element | null = null;
   private eventHandlers: TerminalEventHandlers | null = null;
   private stateCallbacks: TerminalStateCallbacks | null = null;
+  private readonly clientInstanceId = getClientInstanceId();
 
   setSession(session: Session | null) {
     this.session = session;
@@ -227,13 +229,27 @@ export class TerminalLifecycleManager {
               'Content-Type': 'application/json',
               ...authClient.getAuthHeader(),
             },
-            body: JSON.stringify({ cols: cols, rows: rows }),
+            body: JSON.stringify({
+              cols: cols,
+              rows: rows,
+              clientId: this.clientInstanceId,
+            }),
           });
 
           if (response.ok) {
+            const payload = await response.json().catch(() => null);
+            if (payload && typeof payload.cols === 'number' && typeof payload.rows === 'number') {
+              this.lastResizeWidth = payload.cols;
+              this.lastResizeHeight = payload.rows;
+            } else {
+              this.lastResizeWidth = cols;
+              this.lastResizeHeight = rows;
+            }
             // Cache the successfully sent dimensions
-            this.lastResizeWidth = cols;
-            this.lastResizeHeight = rows;
+            logger.debug('resize acknowledged by server', {
+              appliedCols: this.lastResizeWidth,
+              appliedRows: this.lastResizeHeight,
+            });
           } else {
             logger.warn(`failed to resize session: ${response.status}`);
           }

@@ -72,6 +72,7 @@ const TITLE_INJECTION_CHECK_INTERVAL_MS = 10; // How often to check for quiet pe
 const PROCESS_POLL_INTERVAL_MS = 500; // How often to check foreground process
 const MIN_COMMAND_DURATION_MS = 3000; // Minimum duration for command completion notifications (3 seconds)
 const SHELL_COMMANDS = new Set(['cd', 'ls', 'pwd', 'echo', 'export', 'alias', 'unset']); // Built-in commands to ignore
+const BROWSER_RESIZE_CLIENT_TTL_MS = 5 * 60 * 1000; // Retain browser resize preferences for 5 minutes
 
 /**
  * PtyManager handles the lifecycle and I/O operations of pseudo-terminal (PTY) sessions.
@@ -540,6 +541,8 @@ export class PtyManager extends EventEmitter {
         currentWorkingDir: workingDir,
         titleFilter: new TitleSequenceFilter(),
         isTmuxAttachment,
+        cursorPositionQueryBuffer: '',
+        browserResizeClients: new Map(),
       };
 
       this.sessions.set(sessionId, session);
@@ -628,6 +631,8 @@ export class PtyManager extends EventEmitter {
       logger.error(`No PTY process found for session ${session.id}`);
       return;
     }
+
+    session.cursorPositionQueryBuffer = '';
 
     // Create write queue for stdout if forwarding
     const stdoutQueue = forwardToStdout ? new WriteQueue() : null;
@@ -724,6 +729,7 @@ export class PtyManager extends EventEmitter {
 
     // Handle PTY data output
     ptyProcess.onData((data: string) => {
+      this.handleCursorPositionQueries(session, data);
       let processedData = data;
 
       // Track PTY output in SessionMonitor for activity and bell detection
@@ -872,6 +878,103 @@ export class PtyManager extends EventEmitter {
 
     // Setup IPC socket for all communication
     this.setupIPCSocket(session);
+  }
+
+  private handleCursorPositionQueries(session: PtySession, dataChunk: string): void {
+    // Only needed for web sessions that rely on our virtual terminal implementation
+    if (session.isExternalTerminal || !session.ptyProcess) {
+      return;
+    }
+
+    const querySequence = '\x1b[6n';
+    const bufferedPrefix = session.cursorPositionQueryBuffer ?? '';
+    const combined = bufferedPrefix ? bufferedPrefix + dataChunk : dataChunk;
+
+    let searchIndex = 0;
+    let handledQueries = 0;
+
+    while (true) {
+      const matchIndex = combined.indexOf(querySequence, searchIndex);
+      if (matchIndex === -1) {
+        break;
+      }
+      this.enqueueCursorPositionResponse(session);
+      handledQueries++;
+      searchIndex = matchIndex + querySequence.length;
+    }
+
+    if (handledQueries > 0) {
+      logger.debug(
+        `Responded to ${handledQueries} cursor position quer${handledQueries === 1 ? 'y' : 'ies'} for session ${session.id}`
+      );
+    }
+
+    session.cursorPositionQueryBuffer = this.extractCursorQuerySuffix(combined, querySequence);
+  }
+
+  private extractCursorQuerySuffix(data: string, sequence: string): string {
+    const maxPrefixLength = sequence.length - 1;
+    const limit = Math.min(maxPrefixLength, data.length);
+
+    for (let length = limit; length > 0; length--) {
+      const candidate = sequence.slice(0, length);
+      if (data.endsWith(candidate)) {
+        return candidate;
+      }
+    }
+
+    return '';
+  }
+
+  private enqueueCursorPositionResponse(session: PtySession): void {
+    const response = '\x1b[1;1R';
+    if (!session.inputQueue || !session.ptyProcess) {
+      return;
+    }
+
+    session.inputQueue.enqueue(() => {
+      if (!session.ptyProcess) {
+        return;
+      }
+      session.ptyProcess.write(response);
+      session.asciinemaWriter?.writeInput(response);
+    });
+  }
+
+  private pruneExpiredBrowserResizeClients(
+    clients: Map<string, { cols: number; rows: number; lastSeen: number }>,
+    now: number
+  ): void {
+    for (const [key, record] of clients.entries()) {
+      if (now - record.lastSeen > BROWSER_RESIZE_CLIENT_TTL_MS) {
+        clients.delete(key);
+      }
+    }
+  }
+
+  private calculateAggregatedBrowserResize(
+    clients: Map<string, { cols: number; rows: number }>
+  ): { cols: number; rows: number } {
+    let maxCols = 0;
+    let maxRows = 0;
+
+    for (const record of clients.values()) {
+      if (record.cols > maxCols) {
+        maxCols = record.cols;
+      }
+      if (record.rows > maxRows) {
+        maxRows = record.rows;
+      }
+    }
+
+    if (maxCols === 0) {
+      maxCols = 1;
+    }
+    if (maxRows === 0) {
+      maxRows = 1;
+    }
+
+    return { cols: maxCols, rows: maxRows };
   }
 
   /**
@@ -1365,9 +1468,49 @@ export class PtyManager extends EventEmitter {
   /**
    * Resize a session terminal
    */
-  resizeSession(sessionId: string, cols: number, rows: number): void {
+  resizeSession(
+    sessionId: string,
+    cols: number,
+    rows: number,
+    clientId?: string
+  ): { cols: number; rows: number } {
     const memorySession = this.sessions.get(sessionId);
     const currentTime = Date.now();
+
+    let targetCols = cols;
+    let targetRows = rows;
+
+    if (memorySession) {
+      if (clientId) {
+        if (!memorySession.browserResizeClients) {
+          memorySession.browserResizeClients = new Map();
+        }
+        memorySession.browserResizeClients.set(clientId, {
+          cols,
+          rows,
+          lastSeen: currentTime,
+        });
+      }
+
+      if (memorySession.browserResizeClients && memorySession.browserResizeClients.size > 0) {
+        this.pruneExpiredBrowserResizeClients(memorySession.browserResizeClients, currentTime);
+
+        if (memorySession.browserResizeClients.size > 0) {
+          const aggregated = this.calculateAggregatedBrowserResize(
+            memorySession.browserResizeClients
+          );
+          targetCols = aggregated.cols;
+          targetRows = aggregated.rows;
+        } else {
+          targetCols = cols;
+          targetRows = rows;
+        }
+      }
+    }
+
+    // Ensure dimensions stay within supported bounds
+    targetCols = Math.max(1, Math.min(1000, targetCols));
+    targetRows = Math.max(1, Math.min(1000, targetRows));
 
     // Check for rapid resizes (potential feedback loop)
     const lastResize = this.sessionResizeSources.get(sessionId);
@@ -1376,7 +1519,7 @@ export class PtyManager extends EventEmitter {
       if (timeSinceLastResize < 100) {
         // Less than 100ms since last resize - this might indicate a loop
         logger.warn(
-          `Rapid resize detected for session ${sessionId}: ${timeSinceLastResize}ms since last resize (${lastResize.cols}x${lastResize.rows} -> ${cols}x${rows})`
+          `Rapid resize detected for session ${sessionId}: ${timeSinceLastResize}ms since last resize (${lastResize.cols}x${lastResize.rows} -> ${targetCols}x${targetRows})`
         );
       }
     }
@@ -1384,31 +1527,33 @@ export class PtyManager extends EventEmitter {
     try {
       // If we have an in-memory session with active PTY, resize it
       if (memorySession?.ptyProcess) {
-        memorySession.ptyProcess.resize(cols, rows);
-        memorySession.asciinemaWriter?.writeResize(cols, rows);
+        memorySession.ptyProcess.resize(targetCols, targetRows);
+        memorySession.asciinemaWriter?.writeResize(targetCols, targetRows);
 
         // Track this browser-initiated resize
         this.sessionResizeSources.set(sessionId, {
-          cols,
-          rows,
+          cols: targetCols,
+          rows: targetRows,
           source: 'browser',
           timestamp: currentTime,
         });
 
-        logger.debug(`Resized session ${sessionId} to ${cols}x${rows}`);
+        logger.debug(
+          `Resized session ${sessionId} to ${targetCols}x${targetRows} (client ${clientId ?? 'unknown'})`
+        );
       } else {
         // For external sessions, try to send resize via control pipe
         const resizeMessage: ResizeControlMessage = {
           cmd: 'resize',
-          cols,
-          rows,
+          cols: targetCols,
+          rows: targetRows,
         };
         this.sendControlMessage(sessionId, resizeMessage);
 
         // Track this resize for external sessions too
         this.sessionResizeSources.set(sessionId, {
-          cols,
-          rows,
+          cols: targetCols,
+          rows: targetRows,
           source: 'browser',
           timestamp: currentTime,
         });
@@ -1420,6 +1565,8 @@ export class PtyManager extends EventEmitter {
         sessionId
       );
     }
+
+    return { cols: targetCols, rows: targetRows };
   }
 
   /**

@@ -40,6 +40,7 @@ export class TerminalRenderer extends LitElement {
   @property({ type: Object }) onTerminalInput?: (e: CustomEvent) => void;
   @property({ type: Object }) onTerminalResize?: (e: CustomEvent) => void;
   @property({ type: Object }) onTerminalReady?: (e: CustomEvent) => void;
+  @property({ type: Object }) onTerminalHistory?: (e: CustomEvent) => void;
 
   render() {
     if (!this.session) {
@@ -66,6 +67,7 @@ export class TerminalRenderer extends LitElement {
           @terminal-input=${(e: Event) => this.handleTerminalInput(e)}
           @terminal-resize=${(e: Event) => this.handleTerminalResize(e)}
           @terminal-ready=${(e: Event) => this.handleTerminalReady(e)}
+          @terminal-history-threshold=${(e: Event) => this.handleTerminalHistory(e)}
         ></vibe-terminal-binary>
       `;
     } else {
@@ -88,6 +90,7 @@ export class TerminalRenderer extends LitElement {
           @terminal-input=${(e: Event) => this.handleTerminalInput(e)}
           @terminal-resize=${(e: Event) => this.handleTerminalResize(e)}
           @terminal-ready=${(e: Event) => this.handleTerminalReady(e)}
+          @terminal-history-threshold=${(e: Event) => this.handleTerminalHistory(e)}
         ></vibe-terminal>
       `;
     }
@@ -107,5 +110,9 @@ export class TerminalRenderer extends LitElement {
 
   private handleTerminalReady(e: Event) {
     this.onTerminalReady?.(e as CustomEvent);
+  }
+
+  private handleTerminalHistory(e: Event) {
+    this.onTerminalHistory?.(e as CustomEvent);
   }
 }

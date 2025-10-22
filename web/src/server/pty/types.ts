@@ -118,6 +118,17 @@ export interface PtySession {
   processPollingInterval?: NodeJS.Timeout; // Interval for checking process state
   // Tmux attachment tracking
   isTmuxAttachment?: boolean; // True if this session is attached to tmux
+  // Buffer for detecting split cursor position queries
+  cursorPositionQueryBuffer?: string;
+  // Per-client browser resize preferences
+  browserResizeClients?: Map<
+    string,
+    {
+      cols: number;
+      rows: number;
+      lastSeen: number;
+    }
+  >;
 }
 
 export class PtyError extends Error {

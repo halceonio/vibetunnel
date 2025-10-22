@@ -23,6 +23,7 @@ import { getCurrentTheme } from '../utils/theme-utils.js';
 import { UrlHighlighter } from '../utils/url-highlighter';
 
 const logger = createLogger('terminal');
+const DEFAULT_SCROLLBACK_LIMIT = 5000;
 
 @customElement('vibe-terminal')
 export class Terminal extends LitElement {
@@ -78,6 +79,7 @@ export class Terminal extends LitElement {
   private momentumVelocityX = 0;
   private momentumAnimation: number | null = null;
   private resizeObserver: ResizeObserver | null = null;
+  private historyThresholdNotified = false;
   private mobileWidthResizeComplete = false;
   private pendingResize: number | null = null;
   private lastCols = 0;
@@ -512,7 +514,7 @@ export class Terminal extends LitElement {
         cursorWidth: 1,
         lineHeight: 1.2,
         letterSpacing: 0,
-        scrollback: 10000,
+        scrollback: DEFAULT_SCROLLBACK_LIMIT,
         allowProposedApi: true,
         allowTransparency: false,
         convertEol: true,
@@ -1072,6 +1074,35 @@ export class Terminal extends LitElement {
 
     const buffer = this.terminal.buffer.active;
     const bufferLength = buffer.length;
+
+    const scrollbackLimit = this.terminal.options.scrollback ?? DEFAULT_SCROLLBACK_LIMIT;
+    if (bufferLength >= scrollbackLimit && !this.historyThresholdNotified) {
+      this.historyThresholdNotified = true;
+      this.dispatchEvent(
+        new CustomEvent('terminal-history-threshold', {
+          detail: {
+            exceeded: true,
+            totalRows: bufferLength,
+            limit: scrollbackLimit,
+          },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    } else if (bufferLength < scrollbackLimit && this.historyThresholdNotified) {
+      this.historyThresholdNotified = false;
+      this.dispatchEvent(
+        new CustomEvent('terminal-history-threshold', {
+          detail: {
+            exceeded: false,
+            totalRows: bufferLength,
+            limit: scrollbackLimit,
+          },
+          bubbles: true,
+          composed: true,
+        })
+      );
+    }
     const lineHeight = this.fontSize * 1.2;
 
     // Convert pixel scroll position to fractional line position

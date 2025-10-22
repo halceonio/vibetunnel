@@ -61,6 +61,9 @@ export interface UIState {
 
   // Keyboard capture
   keyboardCaptureActive: boolean;
+
+  // Terminal history state
+  hasTruncatedHistory: boolean;
 }
 
 export interface UIStateCallbacks {
@@ -115,6 +118,9 @@ export class UIStateManager {
 
     // Keyboard capture
     keyboardCaptureActive: true,
+
+    // Terminal history state
+    hasTruncatedHistory: false,
   };
 
   private callbacks: UIStateCallbacks | null = null;
@@ -271,6 +277,14 @@ export class UIStateManager {
   // Keyboard capture
   setKeyboardCaptureActive(active: boolean): void {
     this.state.keyboardCaptureActive = active;
+    this.callbacks?.requestUpdate();
+  }
+
+  setHasTruncatedHistory(value: boolean): void {
+    if (this.state.hasTruncatedHistory === value) {
+      return;
+    }
+    this.state.hasTruncatedHistory = value;
     this.callbacks?.requestUpdate();
   }
 

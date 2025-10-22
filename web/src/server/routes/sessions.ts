@@ -1124,7 +1124,7 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
   // Resize session
   router.post('/sessions/:sessionId/resize', async (req, res) => {
     const sessionId = req.params.sessionId;
-    const { cols, rows } = req.body;
+    const { cols, rows, clientId } = req.body;
 
     if (typeof cols !== 'number' || typeof rows !== 'number') {
       logger.warn(`invalid resize request for session ${sessionId}: cols/rows not numbers`);
@@ -1154,7 +1154,7 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
                 'Content-Type': 'application/json',
                 Authorization: `Bearer ${remote.token}`,
               },
-              body: JSON.stringify({ cols, rows }),
+              body: JSON.stringify({ cols, rows, clientId }),
               signal: AbortSignal.timeout(5000),
             });
 
@@ -1183,10 +1183,14 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
       }
 
       // Resize the session
-      ptyManager.resizeSession(sessionId, cols, rows);
-      logger.log(chalk.green(`session ${sessionId} resized to ${cols}x${rows}`));
+      const applied = ptyManager.resizeSession(sessionId, cols, rows, clientId);
+      logger.log(
+        chalk.green(
+          `session ${sessionId} resized to ${applied.cols}x${applied.rows} (requested ${cols}x${rows}, client ${clientId ?? 'unknown'})`
+        )
+      );
 
-      res.json({ success: true, cols, rows });
+      res.json({ success: true, cols: applied.cols, rows: applied.rows });
     } catch (error) {
       logger.error('error resizing session via PTY service:', error);
       if (error instanceof PtyError) {
