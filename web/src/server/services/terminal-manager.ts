@@ -46,6 +46,7 @@ interface SessionTerminal {
   isProcessingPending?: boolean;
   lastFileOffset?: number;
   lineBuffer?: string;
+  lastSnapshotSignature?: string;
 }
 
 type BufferChangeListener = (sessionId: string, snapshot: BufferSnapshot) => void;
@@ -65,6 +66,17 @@ interface BufferSnapshot {
   cursorX: number;
   cursorY: number;
   cells: BufferCell[][];
+}
+
+function computeSnapshotSignature(snapshot: BufferSnapshot): string {
+  let signature = `${snapshot.viewportY}:${snapshot.cursorX}:${snapshot.cursorY}|${snapshot.rows}|`;
+  for (const row of snapshot.cells) {
+    for (const cell of row) {
+      signature += `${cell.char}:${cell.width}:${cell.fg ?? ''}:${cell.bg ?? ''}:${cell.attributes ?? ''}|`;
+    }
+    signature += '\n';
+  }
+  return signature;
 }
 
 /**
@@ -1155,6 +1167,7 @@ export class TerminalManager {
   private async notifyBufferChange(sessionId: string) {
     const listeners = this.bufferListeners.get(sessionId);
     if (!listeners || listeners.size === 0) return;
+    const sessionTerminal = this.terminals.get(sessionId);
 
     // logger.debug(
     //   `Notifying ${listeners.size} buffer change listeners for session ${truncateForLog(sessionId)}`
@@ -1163,6 +1176,16 @@ export class TerminalManager {
     try {
       // Get full buffer snapshot
       const snapshot = await this.getBufferSnapshot(sessionId);
+      const signature = computeSnapshotSignature(snapshot);
+
+      if (sessionTerminal && sessionTerminal.lastSnapshotSignature === signature) {
+        logger.debug(`Skipping duplicate buffer snapshot for session ${truncateForLog(sessionId)}`);
+        return;
+      }
+
+      if (sessionTerminal) {
+        sessionTerminal.lastSnapshotSignature = signature;
+      }
 
       // Notify all listeners
       listeners.forEach((listener) => {
