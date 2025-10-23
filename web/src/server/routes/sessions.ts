@@ -974,8 +974,13 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
       // Get terminal buffer snapshot
       const snapshot = await terminalManager.getBufferSnapshot(sessionId);
 
+      if (!snapshot) {
+        logger.error(`Failed to capture buffer snapshot for session ${sessionId}`);
+        return res.status(500).json({ error: 'Failed to capture terminal buffer' });
+      }
+
       // Encode as binary buffer
-      const buffer = terminalManager.encodeSnapshot(snapshot);
+      const buffer = terminalManager.encodeSnapshot(sessionId, snapshot);
 
       logger.debug(
         `sending buffer for session ${sessionId}: ${buffer.length} bytes, ` +

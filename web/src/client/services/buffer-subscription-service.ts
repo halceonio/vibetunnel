@@ -57,7 +57,7 @@
  */
 
 import { createLogger } from '../utils/logger.js';
-import type { BufferCell } from '../utils/terminal-renderer.js';
+import type { BufferSnapshot } from '../utils/terminal-renderer.js';
 import { authClient } from './auth-client.js';
 
 const logger = createLogger('buffer-subscription-service');
@@ -75,14 +75,6 @@ const logger = createLogger('buffer-subscription-service');
  * @property cursorY - Cursor row position (0-based)
  * @property cells - 2D array of terminal cells [row][col]
  */
-interface BufferSnapshot {
-  cols: number;
-  rows: number;
-  viewportY: number;
-  cursorX: number;
-  cursorY: number;
-  cells: BufferCell[][];
-}
 
 /**
  * Callback function for buffer updates
@@ -117,6 +109,7 @@ export class BufferSubscriptionService {
   private pingInterval: number | null = null;
   private isConnecting = false;
   private messageQueue: Array<{ type: string; sessionId?: string }> = [];
+  private lastSnapshots = new Map<string, BufferSnapshot>();
 
   private initialized = false;
   private noAuthMode: boolean | null = null;
@@ -395,7 +388,9 @@ export class BufferSubscriptionService {
       import('../utils/terminal-renderer.js')
         .then(({ TerminalRenderer }) => {
           try {
-            const snapshot = TerminalRenderer.decodeBinaryBuffer(bufferData);
+            const previousSnapshot = this.lastSnapshots.get(sessionId);
+            const snapshot = TerminalRenderer.decodeBinaryBuffer(bufferData, previousSnapshot);
+            this.lastSnapshots.set(sessionId, snapshot);
 
             // Notify all handlers for this session
             const handlers = this.subscriptions.get(sessionId);
@@ -410,6 +405,7 @@ export class BufferSubscriptionService {
             }
           } catch (error) {
             logger.error('failed to decode binary buffer', error);
+            this.lastSnapshots.delete(sessionId);
           }
         })
         .catch((error) => {
@@ -490,6 +486,7 @@ export class BufferSubscriptionService {
         // If no more handlers, unsubscribe from session
         if (handlers.size === 0) {
           this.subscriptions.delete(sessionId);
+          this.lastSnapshots.delete(sessionId);
           this.sendMessage({ type: 'unsubscribe', sessionId });
         }
       }
@@ -533,6 +530,7 @@ export class BufferSubscriptionService {
     }
 
     this.subscriptions.clear();
+    this.lastSnapshots.clear();
     this.messageQueue = [];
   }
 }

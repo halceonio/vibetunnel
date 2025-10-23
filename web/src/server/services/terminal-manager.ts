@@ -47,6 +47,7 @@ interface SessionTerminal {
   lastFileOffset?: number;
   lineBuffer?: string;
   lastSnapshotSignature?: string;
+  lastSnapshot?: BufferSnapshot;
 }
 
 type BufferChangeListener = (sessionId: string, snapshot: BufferSnapshot) => void;
@@ -59,7 +60,7 @@ interface BufferCell {
   attributes?: number;
 }
 
-interface BufferSnapshot {
+export interface BufferSnapshot {
   cols: number;
   rows: number;
   viewportY: number;
@@ -77,6 +78,29 @@ function computeSnapshotSignature(snapshot: BufferSnapshot): string {
     signature += '\n';
   }
   return signature;
+}
+
+function hashRow(row: BufferCell[]): string {
+  if (row.length === 0) {
+    return 'EMPTY';
+  }
+  return row
+    .map(
+      (cell) =>
+        `${cell.char}:${cell.width}:${cell.fg ?? ''}:${cell.bg ?? ''}:${cell.attributes ?? ''}`
+    )
+    .join('|');
+}
+
+function cloneSnapshot(snapshot: BufferSnapshot): BufferSnapshot {
+  return {
+    cols: snapshot.cols,
+    rows: snapshot.rows,
+    viewportY: snapshot.viewportY,
+    cursorX: snapshot.cursorX,
+    cursorY: snapshot.cursorY,
+    cells: snapshot.cells.map((row) => row.map((cell) => ({ ...cell }))),
+  };
 }
 
 /**
@@ -719,7 +743,7 @@ export class TerminalManager {
    * @example
    * ```typescript
    * const snapshot = await manager.getBufferSnapshot('session-123');
-   * const binary = manager.encodeSnapshot(snapshot);
+   * const binary = manager.encodeSnapshot('session-123', snapshot);
    *
    * // Send over WebSocket with session ID
    * const packet = Buffer.concat([
@@ -731,94 +755,121 @@ export class TerminalManager {
    * ws.send(packet);
    * ```
    */
-  encodeSnapshot(snapshot: BufferSnapshot): Buffer {
+  encodeSnapshot(sessionId: string, snapshot: BufferSnapshot): Buffer {
     const startTime = Date.now();
     const { cols, rows, viewportY, cursorX, cursorY, cells } = snapshot;
+    const sessionTerminal = this.terminals.get(sessionId);
+    const previousSnapshot = sessionTerminal?.lastSnapshot;
 
-    // Pre-calculate actual data size for efficiency
-    let dataSize = 32; // Header size
+    let useDiff = false;
+    let changedRows: Array<{ index: number; row: BufferCell[] }> = [];
 
-    // First pass: calculate exact size needed
-    for (let row = 0; row < cells.length; row++) {
-      const rowCells = cells[row];
-      if (
-        rowCells.length === 0 ||
-        (rowCells.length === 1 &&
-          rowCells[0].char === ' ' &&
-          !rowCells[0].fg &&
-          !rowCells[0].bg &&
-          !rowCells[0].attributes)
-      ) {
-        // Empty row marker: 2 bytes
-        dataSize += 2;
-      } else {
-        // Row header: 3 bytes (marker + length)
-        dataSize += 3;
+    if (
+      previousSnapshot &&
+      previousSnapshot.cols === cols &&
+      previousSnapshot.rows === rows &&
+      previousSnapshot.viewportY === viewportY
+    ) {
+      const prevRowHashes = previousSnapshot.cells.map(hashRow);
+      const currentRowHashes = cells.map(hashRow);
 
-        for (const cell of rowCells) {
-          dataSize += this.calculateCellSize(cell);
+      for (let i = 0; i < currentRowHashes.length; i++) {
+        if (prevRowHashes[i] !== currentRowHashes[i]) {
+          changedRows.push({ index: i, row: cells[i] });
         }
+      }
+
+      // If everything changed, no benefit to diff mode
+      if (changedRows.length > 0 && changedRows.length < cells.length) {
+        useDiff = true;
+      } else {
+        changedRows = [];
       }
     }
 
-    const buffer = Buffer.allocUnsafe(dataSize);
+    let buffer: Buffer;
     let offset = 0;
+    const flags = useDiff ? 0x01 : 0x00;
 
-    // Write header (32 bytes)
-    buffer.writeUInt16LE(0x5654, offset);
-    offset += 2; // Magic "VT"
-    buffer.writeUInt8(0x01, offset); // Version 1 - our only format
-    offset += 1; // Version
-    buffer.writeUInt8(0x00, offset);
-    offset += 1; // Flags
-    buffer.writeUInt32LE(cols, offset);
-    offset += 4; // Cols (32-bit)
-    buffer.writeUInt32LE(rows, offset);
-    offset += 4; // Rows (32-bit)
-    buffer.writeInt32LE(viewportY, offset); // Signed for large buffers
-    offset += 4; // ViewportY (32-bit signed)
-    buffer.writeInt32LE(cursorX, offset); // Signed for consistency
-    offset += 4; // CursorX (32-bit signed)
-    buffer.writeInt32LE(cursorY, offset); // Signed for relative positions
-    offset += 4; // CursorY (32-bit signed)
-    buffer.writeUInt32LE(0, offset);
-    offset += 4; // Reserved
+    if (useDiff && changedRows.length > 0) {
+      // Pre-calculate size: header + count + per-row (index + row data)
+      let dataSize = 32 + 2; // Header + changed rows count
+      for (const { row } of changedRows) {
+        dataSize += 2; // Row index
+        dataSize += this.calculateRowSize(row);
+      }
 
-    // Write cells with new optimized format
-    for (let row = 0; row < cells.length; row++) {
-      const rowCells = cells[row];
+      buffer = Buffer.allocUnsafe(dataSize);
 
-      // Check if this is an empty row
-      if (
-        rowCells.length === 0 ||
-        (rowCells.length === 1 &&
-          rowCells[0].char === ' ' &&
-          !rowCells[0].fg &&
-          !rowCells[0].bg &&
-          !rowCells[0].attributes)
-      ) {
-        // Empty row marker
-        buffer.writeUInt8(0xfe, offset++); // Empty row marker
-        buffer.writeUInt8(1, offset++); // Count of empty rows (for now just 1)
-      } else {
-        // Row with content
-        buffer.writeUInt8(0xfd, offset++); // Row marker
-        buffer.writeUInt16LE(rowCells.length, offset); // Number of cells in row
+      // Header
+      buffer.writeUInt16LE(0x5654, offset);
+      offset += 2;
+      buffer.writeUInt8(0x01, offset++);
+      buffer.writeUInt8(flags, offset++);
+      buffer.writeUInt32LE(cols, offset);
+      offset += 4;
+      buffer.writeUInt32LE(rows, offset);
+      offset += 4;
+      buffer.writeInt32LE(viewportY, offset);
+      offset += 4;
+      buffer.writeInt32LE(cursorX, offset);
+      offset += 4;
+      buffer.writeInt32LE(cursorY, offset);
+      offset += 4;
+      buffer.writeUInt32LE(0, offset);
+      offset += 4;
+
+      buffer.writeUInt16LE(changedRows.length, offset);
+      offset += 2;
+
+      for (const { index, row } of changedRows) {
+        buffer.writeUInt16LE(index, offset);
         offset += 2;
+        offset = this.encodeRow(buffer, offset, row);
+      }
+    } else {
+      // Full snapshot path
+      let dataSize = 32;
+      for (const rowCells of cells) {
+        dataSize += this.calculateRowSize(rowCells);
+      }
 
-        // Write each cell
-        for (const cell of rowCells) {
-          offset = this.encodeCell(buffer, offset, cell);
-        }
+      buffer = Buffer.allocUnsafe(dataSize);
+
+      buffer.writeUInt16LE(0x5654, offset);
+      offset += 2;
+      buffer.writeUInt8(0x01, offset++);
+      buffer.writeUInt8(flags, offset++);
+      buffer.writeUInt32LE(cols, offset);
+      offset += 4;
+      buffer.writeUInt32LE(rows, offset);
+      offset += 4;
+      buffer.writeInt32LE(viewportY, offset);
+      offset += 4;
+      buffer.writeInt32LE(cursorX, offset);
+      offset += 4;
+      buffer.writeInt32LE(cursorY, offset);
+      offset += 4;
+      buffer.writeUInt32LE(0, offset);
+      offset += 4;
+
+      for (const rowCells of cells) {
+        offset = this.encodeRow(buffer, offset, rowCells);
       }
     }
 
-    // Return exact size buffer
     const result = buffer.subarray(0, offset);
+
+    if (sessionTerminal) {
+      sessionTerminal.lastSnapshot = cloneSnapshot(snapshot);
+      sessionTerminal.lastSnapshotSignature = computeSnapshotSignature(snapshot);
+    }
 
     const duration = Date.now() - startTime;
     if (duration > 5) {
-      logger.debug(`Encoded snapshot: ${result.length} bytes in ${duration}ms (${rows} rows)`);
+      logger.debug(
+        `Encoded snapshot${useDiff ? ' (diff)' : ''}: ${result.length} bytes in ${duration}ms (${rows} rows)`
+      );
     }
 
     return result;
@@ -867,6 +918,49 @@ export class TerminalManager {
     }
 
     return size;
+  }
+
+  private calculateRowSize(rowCells: BufferCell[]): number {
+    if (
+      rowCells.length === 0 ||
+      (rowCells.length === 1 &&
+        rowCells[0].char === ' ' &&
+        !rowCells[0].fg &&
+        !rowCells[0].bg &&
+        !rowCells[0].attributes)
+    ) {
+      return 2;
+    }
+
+    let size = 3; // Marker + length
+    for (const cell of rowCells) {
+      size += this.calculateCellSize(cell);
+    }
+    return size;
+  }
+
+  private encodeRow(buffer: Buffer, offset: number, rowCells: BufferCell[]): number {
+    if (
+      rowCells.length === 0 ||
+      (rowCells.length === 1 &&
+        rowCells[0].char === ' ' &&
+        !rowCells[0].fg &&
+        !rowCells[0].bg &&
+        !rowCells[0].attributes)
+    ) {
+      buffer.writeUInt8(0xfe, offset++);
+      buffer.writeUInt8(1, offset++);
+      return offset;
+    }
+
+    buffer.writeUInt8(0xfd, offset++);
+    buffer.writeUInt16LE(rowCells.length, offset);
+    offset += 2;
+
+    for (const cell of rowCells) {
+      offset = this.encodeCell(buffer, offset, cell);
+    }
+    return offset;
   }
 
   /**
@@ -1179,12 +1273,8 @@ export class TerminalManager {
       const signature = computeSnapshotSignature(snapshot);
 
       if (sessionTerminal && sessionTerminal.lastSnapshotSignature === signature) {
-        logger.debug(`Skipping duplicate buffer snapshot for session ${truncateForLog(sessionId)}`);
+        sessionTerminal.lastSnapshot = cloneSnapshot(snapshot);
         return;
-      }
-
-      if (sessionTerminal) {
-        sessionTerminal.lastSnapshotSignature = signature;
       }
 
       // Notify all listeners

@@ -2,7 +2,7 @@ import chalk from 'chalk';
 import { WebSocket } from 'ws';
 import { createLogger } from '../utils/logger.js';
 import type { RemoteRegistry } from './remote-registry.js';
-import type { TerminalManager } from './terminal-manager.js';
+import type { BufferSnapshot, TerminalManager } from './terminal-manager.js';
 
 const logger = createLogger('buffer-aggregator');
 
@@ -204,9 +204,9 @@ export class BufferAggregator {
     try {
       const unsubscribe = await this.config.terminalManager.subscribeToBufferChanges(
         sessionId,
-        (sessionId: string, snapshot: Parameters<TerminalManager['encodeSnapshot']>[0]) => {
+        (sessionId: string, snapshot: BufferSnapshot) => {
           try {
-            const buffer = this.config.terminalManager.encodeSnapshot(snapshot);
+            const buffer = this.config.terminalManager.encodeSnapshot(sessionId, snapshot);
             const sessionIdBuffer = Buffer.from(sessionId, 'utf8');
             const totalLength = 1 + 4 + sessionIdBuffer.length + buffer.length;
             const fullBuffer = Buffer.allocUnsafe(totalLength);
@@ -240,7 +240,7 @@ export class BufferAggregator {
       // Send initial buffer
       logger.debug(`Sending initial buffer for session ${sessionId}`);
       const initialSnapshot = await this.config.terminalManager.getBufferSnapshot(sessionId);
-      const buffer = this.config.terminalManager.encodeSnapshot(initialSnapshot);
+      const buffer = this.config.terminalManager.encodeSnapshot(sessionId, initialSnapshot);
 
       const sessionIdBuffer = Buffer.from(sessionId, 'utf8');
       const totalLength = 1 + 4 + sessionIdBuffer.length + buffer.length;

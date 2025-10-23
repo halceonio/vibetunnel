@@ -8,6 +8,15 @@ export interface BufferCell {
   attributes?: number;
 }
 
+export interface BufferSnapshot {
+  cols: number;
+  rows: number;
+  viewportY: number;
+  cursorX: number;
+  cursorY: number;
+  cells: BufferCell[][];
+}
+
 // Attribute bit flags
 const ATTR_BOLD = 0x01;
 const ATTR_ITALIC = 0x02;
@@ -267,14 +276,10 @@ function getCellStylingFromBuffer(
 /**
  * Decode binary buffer format
  */
-export function decodeBinaryBuffer(buffer: ArrayBuffer): {
-  cols: number;
-  rows: number;
-  viewportY: number;
-  cursorX: number;
-  cursorY: number;
-  cells: BufferCell[][];
-} {
+export function decodeBinaryBuffer(
+  buffer: ArrayBuffer,
+  previousSnapshot?: BufferSnapshot
+): BufferSnapshot {
   const view = new DataView(buffer);
   let offset = 0;
 
@@ -290,7 +295,7 @@ export function decodeBinaryBuffer(buffer: ArrayBuffer): {
     throw new Error(`Unsupported buffer version: ${version}`);
   }
 
-  const _flags = view.getUint8(offset++);
+  const flags = view.getUint8(offset++);
   const cols = view.getUint32(offset, true);
   offset += 4;
   const rows = view.getUint32(offset, true);
@@ -304,21 +309,67 @@ export function decodeBinaryBuffer(buffer: ArrayBuffer): {
   offset += 4; // Skip reserved
 
   // Decode cells
-  const cells: BufferCell[][] = [];
   const uint8 = new Uint8Array(buffer);
 
-  // Optimized format
+  const isDiff = (flags & 0x01) === 0x01;
+
+  if (isDiff) {
+    if (!previousSnapshot) {
+      throw new Error('Received diff buffer without previous snapshot');
+    }
+    if (previousSnapshot.cols !== cols || previousSnapshot.rows !== rows) {
+      throw new Error('Previous snapshot dimensions do not match diff update');
+    }
+
+    const baseCells = cloneCells(previousSnapshot.cells, rows);
+
+    const changedCount = view.getUint16(offset, true);
+    offset += 2;
+
+    for (let i = 0; i < changedCount; i++) {
+      const rowIndex = view.getUint16(offset, true);
+      offset += 2;
+
+      if (rowIndex >= baseCells.length) {
+        throw new Error(`Diff update references row ${rowIndex} out of range`);
+      }
+
+      const marker = uint8[offset++];
+      let rowCells: BufferCell[] = [];
+
+      if (marker === 0xfe) {
+        // Empty row marker
+        const count = uint8[offset++];
+        rowCells = count > 0 ? [{ char: ' ', width: 1 }] : [{ char: ' ', width: 1 }];
+      } else if (marker === 0xfd) {
+        const cellCount = view.getUint16(offset, true);
+        offset += 2;
+        for (let j = 0; j < cellCount; j++) {
+          const result = decodeCell(uint8, offset);
+          offset = result.offset;
+          rowCells.push(result.cell);
+        }
+      } else {
+        throw new Error(`Unknown row marker in diff update: ${marker}`);
+      }
+
+      baseCells[rowIndex] = rowCells.length > 0 ? rowCells : [{ char: ' ', width: 1 }];
+    }
+
+    return { cols, rows, viewportY, cursorX, cursorY, cells: baseCells };
+  }
+
+  const cells: BufferCell[][] = [];
+
   while (offset < uint8.length) {
     const marker = uint8[offset++];
 
     if (marker === 0xfe) {
-      // Empty row(s)
       const count = uint8[offset++];
       for (let i = 0; i < count; i++) {
         cells.push([{ char: ' ', width: 1 }]);
       }
     } else if (marker === 0xfd) {
-      // Row with content
       const cellCount = view.getUint16(offset, true);
       offset += 2;
 
@@ -330,6 +381,10 @@ export function decodeBinaryBuffer(buffer: ArrayBuffer): {
       }
       cells.push(rowCells);
     }
+  }
+
+  while (cells.length < rows) {
+    cells.push([{ char: ' ', width: 1 }]);
   }
 
   return { cols, rows, viewportY, cursorX, cursorY, cells };
@@ -417,3 +472,16 @@ export const TerminalRenderer = {
   renderLineFromCells,
   decodeBinaryBuffer,
 };
+
+function cloneCells(source: BufferCell[][], targetRows: number): BufferCell[][] {
+  const result: BufferCell[][] = new Array(targetRows);
+  for (let i = 0; i < targetRows; i++) {
+    const row = source[i];
+    if (row) {
+      result[i] = row.map((cell) => ({ ...cell }));
+    } else {
+      result[i] = [{ char: ' ', width: 1 }];
+    }
+  }
+  return result;
+}

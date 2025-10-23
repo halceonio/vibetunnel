@@ -9,7 +9,7 @@ import { BufferSubscriptionService } from './buffer-subscription-service';
 // Mock the terminal renderer module
 vi.mock('../utils/terminal-renderer.js', () => ({
   TerminalRenderer: {
-    decodeBinaryBuffer: vi.fn((data: ArrayBuffer): BufferSnapshot => {
+    decodeBinaryBuffer: vi.fn((data: ArrayBuffer, _previous?: BufferSnapshot): BufferSnapshot => {
       // Check magic bytes
       const view = new DataView(data);
       if (view.byteLength < 2) {

@@ -257,7 +257,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       if (!snapshot) {
         throw new Error('Snapshot not found');
       }
-      const encoded = terminalManager.encodeSnapshot(snapshot);
+      const encoded = terminalManager.encodeSnapshot('binary-test', snapshot);
       expect(encoded).toBeInstanceOf(Uint8Array);
 
       // Verify header
@@ -290,7 +290,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       if (!snapshot) {
         throw new Error('Snapshot not found');
       }
-      const encoded = terminalManager.encodeSnapshot(snapshot);
+      const encoded = terminalManager.encodeSnapshot('empty-test', snapshot);
 
       // Should use 0xFE markers for empty lines
       let emptyLineCount = 0;
@@ -327,7 +327,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       if (!snapshot) {
         throw new Error('Snapshot not found');
       }
-      const encoded = terminalManager.encodeSnapshot(snapshot);
+      const encoded = terminalManager.encodeSnapshot('style-test', snapshot);
 
       // Should contain styled cells
       expect(encoded.length).toBeGreaterThan(32); // Header + content
