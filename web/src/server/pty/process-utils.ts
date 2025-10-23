@@ -12,6 +12,12 @@ import * as path from 'path';
 import { createLogger } from '../utils/logger.js';
 
 const logger = createLogger('process-utils');
+const PATH_DELIMITER = process.platform === 'win32' ? ';' : ':';
+const DEFAULT_PATHEXT = ['.COM', '.EXE', '.BAT', '.CMD', '.VBS', '.VBE', '.JS', '.JSE', '.WSF', '.WSH', '.MSC'];
+
+let cachedPathEnv = process.env.PATH ?? '';
+let cachedPathExt = process.platform === 'win32' ? process.env.PATHEXT ?? DEFAULT_PATHEXT.join(';') : '';
+const commandResolutionCache = new Map<string, string | null>();
 
 /**
  * Get the appropriate shell configuration file for a given shell
@@ -64,6 +70,102 @@ function existsSync(filePath: string): boolean {
   } catch {
     return false;
   }
+}
+
+function resetCommandCacheIfEnvChanged(): void {
+  const currentPath = process.env.PATH ?? '';
+  if (currentPath !== cachedPathEnv) {
+    commandResolutionCache.clear();
+    cachedPathEnv = currentPath;
+  }
+
+  if (process.platform === 'win32') {
+    const currentPathext = process.env.PATHEXT ?? DEFAULT_PATHEXT.join(';');
+    if (currentPathext !== cachedPathExt) {
+      commandResolutionCache.clear();
+      cachedPathExt = currentPathext;
+    }
+  }
+}
+
+function isExecutablePath(candidate: string): boolean {
+  try {
+    const stats = fs.statSync(candidate);
+    if (!stats.isFile()) {
+      return false;
+    }
+
+    if (process.platform === 'win32') {
+      const pathext = (process.env.PATHEXT ?? DEFAULT_PATHEXT.join(';'))
+        .split(';')
+        .filter(Boolean)
+        .map((ext) => ext.trim().toUpperCase());
+      const candidateExt = path.extname(candidate).toUpperCase();
+      // Empty extension is allowed only if PATHEXT contains empty entry
+      return candidateExt === ''
+        ? pathext.includes('')
+        : pathext.includes(candidateExt);
+    }
+
+    fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function resolveExecutable(cmdName: string): string | null {
+  resetCommandCacheIfEnvChanged();
+
+  const cacheKey = cmdName;
+  if (commandResolutionCache.has(cacheKey)) {
+    return commandResolutionCache.get(cacheKey) ?? null;
+  }
+
+  const hasSeparator =
+    cmdName.includes(path.sep) || (process.platform === 'win32' && cmdName.includes('/'));
+  const attemptPaths: string[] = [];
+
+  if (hasSeparator) {
+    attemptPaths.push(path.resolve(cmdName));
+  } else {
+    const pathEnv = cachedPathEnv;
+    const searchDirs = pathEnv ? pathEnv.split(PATH_DELIMITER).filter(Boolean) : [];
+    const pathextEntriesRaw =
+      process.platform === 'win32'
+        ? (process.env.PATHEXT ?? DEFAULT_PATHEXT.join(';'))
+            .split(';')
+            .filter((entry) => entry.length > 0)
+        : [''];
+
+    for (const dir of searchDirs) {
+      const baseCandidate = path.join(dir, cmdName);
+      attemptPaths.push(baseCandidate);
+
+      if (process.platform === 'win32') {
+        const lowerCmd = cmdName.toLowerCase();
+        for (const ext of pathextEntriesRaw) {
+          const lowerExt = ext.toLowerCase();
+          if (lowerExt === '') {
+            continue;
+          }
+          const alreadyHasExt = lowerCmd.endsWith(lowerExt);
+          const candidate = path.join(dir, alreadyHasExt ? cmdName : `${cmdName}${ext}`);
+          attemptPaths.push(candidate);
+        }
+      }
+    }
+  }
+
+  for (const candidate of attemptPaths) {
+    if (isExecutablePath(candidate)) {
+      commandResolutionCache.set(cacheKey, candidate);
+      return candidate;
+    }
+  }
+
+  commandResolutionCache.set(cacheKey, null);
+  return null;
 }
 
 /**
@@ -253,64 +355,52 @@ export function resolveCommand(command: string[]): {
   const cmdName = command[0];
   const cmdArgs = command.slice(1);
 
-  // Check if command exists in PATH using 'which' (Unix) or 'where' (Windows)
-  const whichCommand = process.platform === 'win32' ? 'where' : 'which';
+  const resolvedExecutable = resolveExecutable(cmdName);
 
-  try {
-    const result = spawnSync(whichCommand, [cmdName], {
-      encoding: 'utf8',
-      windowsHide: true,
-      timeout: 2000, // 2 second timeout
-    });
+  if (resolvedExecutable) {
+    logger.debug(`Command '${cmdName}' resolved to: ${resolvedExecutable}`);
 
-    if (result.status === 0 && result.stdout && result.stdout.trim()) {
-      // Command found in PATH
-      logger.debug(`Command '${cmdName}' found at: ${result.stdout.trim()}`);
+    // Check if this is an interactive shell command
+    if (isInteractiveShellCommand(cmdName, cmdArgs)) {
+      logger.log(chalk.cyan(`✓ Starting ${cmdName} as login shell to load configuration files`));
+      // Add both -i (interactive) and -l/--login flags for proper shell initialization
+      // This ensures shell RC files are sourced and the environment is properly set up
 
-      // Check if this is an interactive shell command
-      if (isInteractiveShellCommand(cmdName, cmdArgs)) {
-        logger.log(chalk.cyan(`✓ Starting ${cmdName} as login shell to load configuration files`));
-        // Add both -i (interactive) and -l/--login flags for proper shell initialization
-        // This ensures shell RC files are sourced and the environment is properly set up
+      // Don't add flags if they're already present
+      const hasInteractiveFlag = cmdArgs.some((arg) => arg === '-i' || arg === '--interactive');
+      const hasLoginFlag = cmdArgs.some((arg) => arg === '-l' || arg === '--login');
 
-        // Don't add flags if they're already present
-        const hasInteractiveFlag = cmdArgs.some((arg) => arg === '-i' || arg === '--interactive');
-        const hasLoginFlag = cmdArgs.some((arg) => arg === '-l' || arg === '--login');
+      // Build args array
+      const finalArgs = [...cmdArgs];
 
-        // Build args array
-        const finalArgs = [...cmdArgs];
+      // For fish shell, use --login and --interactive instead of -l and -i
+      const isFish = cmdName === 'fish' || cmdName.endsWith('/fish');
 
-        // For fish shell, use --login and --interactive instead of -l and -i
-        const isFish = cmdName === 'fish' || cmdName.endsWith('/fish');
+      if (!hasInteractiveFlag) {
+        finalArgs.unshift(isFish ? '--interactive' : '-i');
+      }
 
-        if (!hasInteractiveFlag) {
-          finalArgs.unshift(isFish ? '--interactive' : '-i');
-        }
-
-        if (!hasLoginFlag) {
-          finalArgs.unshift(isFish ? '--login' : '-l');
-        }
-
-        return {
-          command: cmdName,
-          args: finalArgs,
-          useShell: false,
-          resolvedFrom: 'path',
-          originalCommand: cmdName,
-          isInteractive: true,
-        };
+      if (!hasLoginFlag) {
+        finalArgs.unshift(isFish ? '--login' : '-l');
       }
 
       return {
-        command: cmdName,
-        args: cmdArgs,
+        command: resolvedExecutable,
+        args: finalArgs,
         useShell: false,
         resolvedFrom: 'path',
         originalCommand: cmdName,
+        isInteractive: true,
       };
     }
-  } catch (error) {
-    logger.debug(`Failed to check command existence for '${cmdName}':`, error);
+
+    return {
+      command: resolvedExecutable,
+      args: cmdArgs,
+      useShell: false,
+      resolvedFrom: 'path',
+      originalCommand: cmdName,
+    };
   }
 
   // Command not found in PATH, likely an alias or shell builtin

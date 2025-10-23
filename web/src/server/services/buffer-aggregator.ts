@@ -135,13 +135,11 @@ export class BufferAggregator {
     if (data.type === 'subscribe' && data.sessionId) {
       const sessionId = data.sessionId;
 
-      // Unsubscribe if already subscribed
+      // Skip redundant subscribe calls to avoid watcher churn
       if (subscriptions.has(sessionId)) {
-        const existingUnsubscribe = subscriptions.get(sessionId);
-        if (existingUnsubscribe) {
-          existingUnsubscribe();
-        }
-        subscriptions.delete(sessionId);
+        clientWs.send(JSON.stringify({ type: 'subscribed', sessionId, dedup: true }));
+        logger.debug(`Client already subscribed to session ${sessionId}, skipping re-subscribe`);
+        return;
       }
 
       // Check if this is a local or remote session
@@ -161,14 +159,14 @@ export class BufferAggregator {
       }
 
       clientWs.send(JSON.stringify({ type: 'subscribed', sessionId }));
-      logger.log(chalk.green(`Client subscribed to session ${sessionId}`));
+      logger.debug(chalk.green(`Client subscribed to session ${sessionId}`));
     } else if (data.type === 'unsubscribe' && data.sessionId) {
       const sessionId = data.sessionId;
       const unsubscribe = subscriptions.get(sessionId);
       if (unsubscribe) {
         unsubscribe();
         subscriptions.delete(sessionId);
-        logger.log(chalk.yellow(`Client unsubscribed from session ${sessionId}`));
+        logger.debug(chalk.yellow(`Client unsubscribed from session ${sessionId}`));
       }
 
       // Also unsubscribe from remote if applicable

@@ -1108,7 +1108,7 @@ export class TerminalManager {
     const listeners = this.bufferListeners.get(sessionId);
     if (listeners) {
       listeners.add(listener);
-      logger.log(
+      logger.debug(
         chalk.blue(`Buffer listener subscribed for session ${sessionId} (${listeners.size} total)`)
       );
     }
@@ -1118,7 +1118,7 @@ export class TerminalManager {
       const listeners = this.bufferListeners.get(sessionId);
       if (listeners) {
         listeners.delete(listener);
-        logger.log(
+        logger.debug(
           chalk.yellow(
             `Buffer listener unsubscribed for session ${sessionId} (${listeners.size} remaining)`
           )
