@@ -12,6 +12,7 @@ import { createLogger } from '../../utils/logger.js';
 import type { Terminal } from '../terminal.js';
 
 const logger = createLogger('connection-manager');
+const INITIAL_STREAM_HISTORY_LINES = 1000;
 
 export interface StreamConnection {
   eventSource: EventSource;
@@ -66,10 +67,18 @@ export class ConnectionManager {
     const user = authClient.getCurrentUser();
 
     // Build stream URL with auth token as query parameter (EventSource doesn't support headers)
-    let streamUrl = `/api/sessions/${this.session.id}/stream`;
+    const params = new URLSearchParams();
     if (user?.token) {
-      streamUrl += `?token=${encodeURIComponent(user.token)}`;
+      params.set('token', user.token);
     }
+    if (INITIAL_STREAM_HISTORY_LINES > 0) {
+      params.set('initialTailLines', `${INITIAL_STREAM_HISTORY_LINES}`);
+    }
+
+    const queryString = params.toString();
+    const streamUrl = queryString
+      ? `/api/sessions/${this.session.id}/stream?${queryString}`
+      : `/api/sessions/${this.session.id}/stream`;
 
     // Use CastConverter to connect terminal to stream with reconnection tracking
     const connection = CastConverter.connectToStream(this.terminal, streamUrl);

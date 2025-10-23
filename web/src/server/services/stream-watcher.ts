@@ -16,10 +16,16 @@ const logger = createLogger('stream-watcher');
 
 // Constants
 const HEADER_READ_BUFFER_SIZE = 4096;
+const MAX_INITIAL_TAIL_LINES = 5000;
+
+interface StreamClientOptions {
+  initialTailLines?: number;
+}
 
 interface StreamClient {
   response: Response;
   startTime: number;
+  options: StreamClientOptions;
 }
 
 // Type for asciinema event array format
@@ -183,10 +189,15 @@ export class StreamWatcher {
   /**
    * Add a client to watch a stream file
    */
-  addClient(sessionId: string, streamPath: string, response: Response): void {
+  addClient(
+    sessionId: string,
+    streamPath: string,
+    response: Response,
+    options: StreamClientOptions = {}
+  ): void {
     logger.debug(`adding client to session ${sessionId}`);
     const startTime = Date.now() / 1000;
-    const client: StreamClient = { response, startTime };
+    const client: StreamClient = { response, startTime, options };
 
     let watcherInfo = this.activeWatchers.get(sessionId);
 
@@ -203,7 +214,7 @@ export class StreamWatcher {
       this.activeWatchers.set(sessionId, watcherInfo);
 
       // Send existing content first
-      this.sendExistingContent(sessionId, streamPath, client);
+      this.sendExistingContent(sessionId, streamPath, client, options);
 
       // Get current file size and stats
       if (fs.existsSync(streamPath)) {
@@ -223,7 +234,7 @@ export class StreamWatcher {
       this.startGitWatching(sessionId, response);
     } else {
       // Send existing content to new client
-      this.sendExistingContent(sessionId, streamPath, client);
+      this.sendExistingContent(sessionId, streamPath, client, options);
 
       // Add this client to git watcher
       gitWatcher.addClient(sessionId, response);
@@ -283,8 +294,18 @@ export class StreamWatcher {
   /**
    * Send existing content to a client
    */
-  private sendExistingContent(sessionId: string, streamPath: string, client: StreamClient): void {
+  private sendExistingContent(
+    sessionId: string,
+    streamPath: string,
+    client: StreamClient,
+    options: StreamClientOptions
+  ): void {
     try {
+      const tailLinesRequested = options?.initialTailLines ?? 0;
+      const initialTailLines = Number.isFinite(tailLinesRequested)
+        ? Math.max(0, Math.min(Math.floor(tailLinesRequested), MAX_INITIAL_TAIL_LINES))
+        : 0;
+
       // Load existing session info or use defaults, but don't save incomplete session data
       const sessionInfo = this.sessionManager.loadSessionInfo(sessionId);
 
@@ -348,6 +369,7 @@ export class StreamWatcher {
       });
       let lineBuffer = '';
       const events: AsciinemaEvent[] = [];
+      const eventOffsets: number[] = [];
       let lastClearIndex = -1;
       let lastResizeBeforeClear: AsciinemaResizeEvent | null = null;
       let currentResize: AsciinemaResizeEvent | null = null;
@@ -366,6 +388,7 @@ export class StreamWatcher {
 
           // Calculate byte length of the line plus newline character
           // Buffer.byteLength correctly handles multi-byte UTF-8 characters
+          const lineStartOffset = fileOffset;
           fileOffset += Buffer.byteLength(line, 'utf8') + 1;
 
           if (line.trim()) {
@@ -377,6 +400,7 @@ export class StreamWatcher {
                 // Check if it's an exit event first
                 if (parsed[0] === 'exit') {
                   events.push(parsed as AsciinemaExitEvent);
+                  eventOffsets.push(lineStartOffset);
                 } else if (parsed.length >= 3 && typeof parsed[0] === 'number') {
                   const event = parsed as AsciinemaEvent;
 
@@ -402,6 +426,7 @@ export class StreamWatcher {
                   }
 
                   events.push(event);
+                  eventOffsets.push(lineStartOffset);
                 }
               }
             } catch (e) {
@@ -417,10 +442,12 @@ export class StreamWatcher {
         if (lineBuffer.trim()) {
           try {
             const parsed = JSON.parse(lineBuffer);
+            const lineStartOffset = fileOffset;
             fileOffset += Buffer.byteLength(lineBuffer, 'utf8');
             if (Array.isArray(parsed)) {
               if (parsed[0] === 'exit') {
                 events.push(parsed as AsciinemaExitEvent);
+                eventOffsets.push(lineStartOffset);
               } else if (parsed.length >= 3 && typeof parsed[0] === 'number') {
                 const event = parsed as AsciinemaEvent;
 
@@ -442,6 +469,7 @@ export class StreamWatcher {
                   }
                 }
                 events.push(event);
+                eventOffsets.push(lineStartOffset);
               }
             }
           } catch (e) {
@@ -450,11 +478,9 @@ export class StreamWatcher {
         }
 
         // Now replay the stream with pruning
-        let startIndex = 0;
+        const baseStartIndex = lastClearIndex >= 0 ? lastClearIndex + 1 : 0;
 
         if (lastClearIndex >= 0) {
-          // Start from after the last clear
-          startIndex = lastClearIndex + 1;
           logger.log(
             chalk.green(
               `pruning stream: skipping ${lastClearIndex + 1} events before last clear at offset ${lastClearOffset}`
@@ -479,6 +505,91 @@ export class StreamWatcher {
           }
           client.response.write(`data: ${JSON.stringify(headerToSend)}\n\n`);
         }
+
+        const totalOutputEvents = events
+          .slice(baseStartIndex)
+          .reduce((count, event) => (isOutputEvent(event) ? count + 1 : count), 0);
+
+        if (initialTailLines > 0 && events.length > baseStartIndex) {
+          let sendStartIndex = events.length - 1;
+          let outputCounter = 0;
+
+          for (let idx = events.length - 1; idx >= baseStartIndex; idx--) {
+            sendStartIndex = idx;
+            const event = events[idx];
+            if (isOutputEvent(event)) {
+              outputCounter++;
+              if (outputCounter >= initialTailLines) {
+                break;
+              }
+            }
+          }
+
+          sendStartIndex = Math.max(sendStartIndex, baseStartIndex);
+          const hasMoreHistory = sendStartIndex > baseStartIndex;
+
+          const chunkEvents: AsciinemaEvent[] = [];
+          let chunkOutputEvents = 0;
+          let exitEventToSend: AsciinemaExitEvent | null = null;
+
+          for (let i = sendStartIndex; i < events.length; i++) {
+            const event = events[i];
+
+            if (isExitEvent(event)) {
+              exitEventToSend = event;
+              continue;
+            }
+
+            if (isOutputEvent(event) || isResizeEvent(event)) {
+              if (isOutputEvent(event)) {
+                chunkOutputEvents++;
+              }
+
+              const normalizedEvent: AsciinemaEvent = [0, event[1], event[2]];
+              chunkEvents.push(normalizedEvent);
+            }
+          }
+
+          const payload = {
+            type: 'history-chunk',
+            mode: 'tail',
+            hasMore: hasMoreHistory,
+            totalEvents: Math.max(events.length - baseStartIndex, 0),
+            totalOutputEvents,
+            chunkEventCount: chunkEvents.length,
+            chunkOutputEvents,
+            chunkStartOffset: eventOffsets[sendStartIndex] ?? startOffset,
+            previousOffset:
+              hasMoreHistory && sendStartIndex > 0 ? eventOffsets[sendStartIndex - 1] ?? null : null,
+            nextOffset: fileOffset,
+            initialTailLines,
+            events: chunkEvents,
+          };
+
+          client.response.write(`data: ${JSON.stringify(payload)}\n\n`);
+          if (client.response.flush) {
+            try {
+              client.response.flush();
+            } catch (flushError) {
+              logger.debug(`flush failed for history chunk: ${flushError}`);
+            }
+          }
+
+          if (exitEventToSend) {
+            client.response.write(`data: ${JSON.stringify(exitEventToSend)}\n\n`);
+            logger.log(
+              chalk.yellow(
+                `session ${client.response.locals?.sessionId || 'unknown'} already ended, closing stream`
+              )
+            );
+            client.response.end();
+          }
+
+          return;
+        }
+
+        // Legacy behaviour (no tail limit requested)
+        let startIndex = baseStartIndex;
 
         // Send remaining events
         let exitEventFound = false;

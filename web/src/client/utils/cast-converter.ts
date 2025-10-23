@@ -26,6 +26,23 @@ export interface ConvertedCast {
   totalDuration: number; // Duration in seconds
 }
 
+type StreamHistoryEvent = [number, 'o' | 'r', string];
+
+interface HistoryChunkPayload {
+  type: 'history-chunk';
+  mode?: string;
+  hasMore?: boolean;
+  totalEvents?: number;
+  totalOutputEvents?: number;
+  chunkEventCount?: number;
+  chunkOutputEvents?: number;
+  chunkStartOffset?: number | null;
+  previousOffset?: number | null;
+  nextOffset?: number | null;
+  initialTailLines?: number;
+  events?: StreamHistoryEvent[];
+}
+
 /**
  * Convert cast file content to data for DOM terminal
  * @param castContent - Raw cast file content (asciinema format)
@@ -299,6 +316,8 @@ export function connectToStream(
     write: (data: string, followCursor?: boolean) => void;
     setTerminalSize?: (cols: number, rows: number) => void;
     dispatchEvent?: (event: CustomEvent) => void;
+    queueCallback?: (callback: () => void) => void;
+    scrollToBottom?: () => void;
   },
   streamUrl: string
 ): {
@@ -329,6 +348,68 @@ export function connectToStream(
     }
   };
 
+  const handleHistoryChunk = (payload: HistoryChunkPayload) => {
+    const events = Array.isArray(payload.events) ? payload.events : [];
+    logger.debug('Processing history chunk', {
+      events: events.length,
+      hasMore: payload.hasMore ?? false,
+      mode: payload.mode ?? 'tail',
+    });
+
+    if (batchTimeout !== null) {
+      clearTimeout(batchTimeout);
+      batchTimeout = null;
+    }
+
+    if (events.length > 0) {
+      for (const event of events) {
+        if (!Array.isArray(event) || event.length < 3) continue;
+        const [, type, eventData] = event;
+
+        if (type === 'o') {
+          addToOutputBuffer(eventData);
+        } else if (type === 'r') {
+          flushOutputBuffer();
+          // Ignore resize events in history chunk to avoid resize loops
+        }
+      }
+
+      flushOutputBuffer();
+    }
+
+    const ensureScrollToBottom = () => {
+      if (typeof terminal.scrollToBottom === 'function') {
+        terminal.scrollToBottom();
+      }
+    };
+
+    if (typeof terminal.queueCallback === 'function') {
+      terminal.queueCallback(ensureScrollToBottom);
+    } else {
+      ensureScrollToBottom();
+    }
+
+    if (typeof terminal.dispatchEvent === 'function') {
+      terminal.dispatchEvent(
+        new CustomEvent('terminal-history-bootstrap', {
+          detail: {
+            hasMore: Boolean(payload.hasMore),
+            totalEvents: payload.totalEvents ?? null,
+            totalOutputEvents: payload.totalOutputEvents ?? null,
+            chunkEventCount: payload.chunkEventCount ?? events.length,
+            chunkOutputEvents: payload.chunkOutputEvents ?? null,
+            chunkStartOffset: payload.chunkStartOffset ?? null,
+            previousOffset: payload.previousOffset ?? null,
+            nextOffset: payload.nextOffset ?? null,
+            initialTailLines: payload.initialTailLines ?? null,
+            mode: payload.mode ?? 'tail',
+          },
+          bubbles: true,
+        })
+      );
+    }
+  };
+
   const disconnect = () => {
     if (batchTimeout !== null) {
       clearTimeout(batchTimeout);
@@ -345,7 +426,19 @@ export function connectToStream(
   eventSource.onmessage = (event) => {
     try {
       const data = JSON.parse(event.data);
-      logger.debug('SSE message received:', { type: Array.isArray(data) ? data[1] : 'header' });
+      const messageType = Array.isArray(data) && data.length >= 2
+        ? data[1]
+        : typeof data === 'object' && data !== null && 'type' in data
+          ? (data as { type?: string }).type ?? 'object'
+          : 'header';
+      logger.debug('SSE message received:', { type: messageType });
+
+      if (data && typeof data === 'object' && !Array.isArray(data)) {
+        if ((data as HistoryChunkPayload).type === 'history-chunk') {
+          handleHistoryChunk(data as HistoryChunkPayload);
+          return;
+        }
+      }
 
       // Check if this is a header message with terminal dimensions
       if (data.version && data.width && data.height) {

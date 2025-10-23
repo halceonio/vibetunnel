@@ -1000,6 +1000,10 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
   router.get('/sessions/:sessionId/stream', async (req, res) => {
     const sessionId = req.params.sessionId;
     const startTime = Date.now();
+    const tailParam = req.query.initialTailLines;
+    const requestedTailLines = Array.isArray(tailParam) ? tailParam[0] : tailParam;
+    const parsedTailLines = Number.parseInt(`${requestedTailLines ?? ''}`, 10);
+    const initialTailLines = Number.isFinite(parsedTailLines) ? Math.max(0, parsedTailLines) : 0;
 
     logger.log(
       chalk.blue(
@@ -1014,7 +1018,26 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
         // Proxy SSE stream from remote server
         try {
           const controller = new AbortController();
-          const response = await fetch(`${remote.url}/api/sessions/${sessionId}/stream`, {
+          const remoteStreamUrl = new URL(`${remote.url}/api/sessions/${sessionId}/stream`);
+
+          for (const [key, value] of Object.entries(req.query)) {
+            if (key === 'token') {
+              // Remote servers use bearer token header, skip query token
+              continue;
+            }
+
+            if (Array.isArray(value)) {
+              for (const v of value) {
+                if (v !== undefined) {
+                  remoteStreamUrl.searchParams.append(key, String(v));
+                }
+              }
+            } else if (value !== undefined) {
+              remoteStreamUrl.searchParams.append(key, String(value));
+            }
+          }
+
+          const response = await fetch(remoteStreamUrl.toString(), {
             headers: {
               Authorization: `Bearer ${remote.token}`,
               Accept: 'text/event-stream',
@@ -1114,7 +1137,7 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
     if (res.flush) res.flush();
 
     // Add client to stream watcher
-    streamWatcher.addClient(sessionId, streamPath, res);
+    streamWatcher.addClient(sessionId, streamPath, res, { initialTailLines });
     logger.debug(`SSE stream setup completed in ${Date.now() - startTime}ms`);
 
     // Send heartbeat every 30 seconds to keep connection alive
