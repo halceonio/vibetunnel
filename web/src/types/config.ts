@@ -62,11 +62,11 @@ export interface VibeTunnelConfig {
 
 export const DEFAULT_QUICK_START_COMMANDS: QuickStartCommand[] = [
   { name: '✨ claude', command: 'claude --dangerously-skip-permissions' },
-  { name: '✨ gemini', command: 'gemini' },
-  { command: 'opencode' },
-  { command: 'crush' },
-  { command: 'zsh' },
+  { name: '✨ gemini', command: 'gemini --yolo' },
+  { name: '✨ codex', command: 'codex --dangerously-bypass-approvals-and-sandbox' },
+  { command: 'bash' },
   { command: 'node' },
+  { command: 'python' },
 ];
 
 export const DEFAULT_NOTIFICATION_PREFERENCES: NotificationPreferences = {
