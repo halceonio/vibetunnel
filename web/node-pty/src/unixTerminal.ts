@@ -12,7 +12,7 @@ import { ArgvOrCommandLine } from './types';
 import { assign } from './utils';
 
 let pty: IUnixNative;
-let helperPath: string;
+let helperPath = '';
 
 // Check if running in SEA (Single Executable Application) context
 if (process.env.VIBETUNNEL_SEA) {
@@ -29,11 +29,15 @@ if (process.env.VIBETUNNEL_SEA) {
     throw new Error(`Could not find pty.node next to executable at: ${ptyPath}`);
   }
   
-  // Set spawn-helper path for macOS only (Linux doesn't use it)
-  if (process.platform === 'darwin') {
-    helperPath = path.join(execDir, 'spawn-helper');
-    if (!fs.existsSync(helperPath)) {
-      console.warn(`spawn-helper not found at ${helperPath}, PTY operations may fail`);
+  // Set spawn-helper path if present next to the executable. Even on Linux the
+  // native addon expects a string argument, so fall back to an empty string.
+  const spawnHelperCandidate = path.join(execDir, 'spawn-helper');
+  if (fs.existsSync(spawnHelperCandidate)) {
+    helperPath = spawnHelperCandidate;
+  } else {
+    helperPath = '';
+    if (process.platform === 'darwin') {
+      console.warn(`spawn-helper not found at ${spawnHelperCandidate}, PTY operations may fail`);
     }
   }
 } else {

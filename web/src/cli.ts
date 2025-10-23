@@ -8,24 +8,35 @@ suppressXtermErrors();
 
 import * as fs from 'fs';
 import * as path from 'path';
-import { startVibeTunnelForward } from './server/fwd.js';
-import { startVibeTunnelServer } from './server/server.js';
 import { closeLogger, createLogger, initLogger, VerbosityLevel } from './server/utils/logger.js';
 import { setVibeTunnelRootDir } from './server/utils/vt-paths.js';
 import { parseVerbosityFromEnv } from './server/utils/verbosity-parser.js';
 import { VERSION } from './server/version.js';
 
-// Check for version command early - before logger initialization
+let startVibeTunnelForward: typeof import('./server/fwd.js')['startVibeTunnelForward'];
+let startVibeTunnelServer: typeof import('./server/server.js')['startVibeTunnelServer'];
+
+function ensureModulesLoaded(): Promise<void> {
+  if (modulesPromise) {
+    return modulesPromise;
+  }
+  modulesPromise = (async () => {
+    const fwd = await import('./server/fwd.js');
+    startVibeTunnelForward = fwd.startVibeTunnelForward;
+    const server = await import('./server/server.js');
+    startVibeTunnelServer = server.startVibeTunnelServer;
+  })();
+  return modulesPromise;
+}
+
+let modulesPromise: Promise<void> | null = null;
+
 if (process.argv[2] === 'version') {
   console.log(`VibeTunnel Server v${VERSION}`);
   process.exit(0);
 }
 
-// Initialize logger before anything else
-// Parse verbosity from environment variables
 const verbosityLevel = parseVerbosityFromEnv();
-
-// Check for legacy debug mode (for backward compatibility with initLogger)
 const debugMode = process.env.VIBETUNNEL_DEBUG === '1' || process.env.VIBETUNNEL_DEBUG === 'true';
 
 const SERVER_ONLY_COMMANDS = new Set([undefined, '', 'help', 'version']);
@@ -95,10 +106,6 @@ if (configDirArg) {
 initLogger(debugMode, verbosityLevel);
 const logger = createLogger('cli');
 
-// Source maps are only included if built with --sourcemap flag
-
-// Prevent double execution in SEA context where require.main might be undefined
-// Use a global flag to ensure we only run once
 interface GlobalWithVibetunnel {
   __vibetunnelStarted?: boolean;
 }
@@ -110,7 +117,6 @@ if (globalWithVibetunnel.__vibetunnelStarted) {
 }
 globalWithVibetunnel.__vibetunnelStarted = true;
 
-// Handle uncaught exceptions
 process.on('uncaughtException', (error) => {
   logger.error('Uncaught exception:', error);
   logger.error('Stack trace:', error.stack);
@@ -127,9 +133,6 @@ process.on('unhandledRejection', (reason, promise) => {
   process.exit(1);
 });
 
-/**
- * Print help message with version and usage information
- */
 function printHelp(): void {
   console.log(`VibeTunnel Server v${VERSION}`);
   console.log('');
@@ -159,17 +162,12 @@ function printHelp(): void {
   console.log('For more options, run: vibetunnel --help');
 }
 
-/**
- * Print version information
- */
 function printVersion(): void {
   console.log(`VibeTunnel Server v${VERSION}`);
 }
 
-/**
- * Handle command forwarding to a session
- */
 async function handleForwardCommand(): Promise<void> {
+  await ensureModulesLoaded();
   try {
     await startVibeTunnelForward(process.argv.slice(3));
   } catch (error) {
@@ -179,12 +177,8 @@ async function handleForwardCommand(): Promise<void> {
   }
 }
 
-/**
- * Handle systemd service installation and management
- */
 async function handleSystemdService(): Promise<void> {
   try {
-    // Import systemd installer dynamically to avoid loading it on every startup
     const { installSystemdService } = await import('./server/services/systemd-installer.js');
     const action = process.argv[3] || 'install';
     installSystemdService(action);
@@ -195,9 +189,6 @@ async function handleSystemdService(): Promise<void> {
   }
 }
 
-/**
- * Handle socket API commands
- */
 async function handleSocketCommand(command: string): Promise<void> {
   try {
     const { SocketApiClient } = await import('./server/socket-api-client.js');
@@ -225,18 +216,14 @@ async function handleSocketCommand(command: string): Promise<void> {
         }
         break;
       }
-
       case 'follow': {
-        // Parse command line arguments
         const args = process.argv.slice(3);
         let worktreePath: string | undefined;
         let mainRepoPath: string | undefined;
 
-        // Parse flags
         for (let i = 0; i < args.length; i++) {
           switch (args[i]) {
             case '--from-worktree':
-              // Flag handled by vt script
               break;
             case '--worktree-path':
               worktreePath = args[++i];
@@ -251,45 +238,39 @@ async function handleSocketCommand(command: string): Promise<void> {
           enable: true,
           worktreePath,
           mainRepoPath,
-          // For backward compatibility, pass repoPath if mainRepoPath not set
           repoPath: mainRepoPath,
         });
 
-        if (response.success) {
-          // Success message is already printed by the vt script
-        } else {
+        if (!response.success) {
           console.error(`Failed to enable follow mode: ${response.error || 'Unknown error'}`);
           process.exit(1);
         }
         break;
       }
-
       case 'unfollow': {
         const repoPath = process.cwd();
-
         const response = await client.setFollowMode({
-          repoPath,
           enable: false,
+          repoPath,
         });
 
-        if (response.success) {
-          console.log('Disabled follow mode');
-        } else {
+        if (!response.success) {
           console.error(`Failed to disable follow mode: ${response.error || 'Unknown error'}`);
           process.exit(1);
         }
         break;
       }
-
       case 'git-event': {
         const repoPath = process.cwd();
-
         await client.sendGitEvent({
           repoPath,
-          type: 'other', // We don't know the specific type from command line
+          type: 'other',
         });
         break;
       }
+      default:
+        console.error(`Unknown socket command: ${command}`);
+        process.exit(1);
     }
   } catch (error) {
     if (error instanceof Error && error.message === 'VibeTunnel server is not running') {
@@ -303,20 +284,21 @@ async function handleSocketCommand(command: string): Promise<void> {
   }
 }
 
-/**
- * Start the VibeTunnel server with optional startup logging
- */
 function handleStartServer(): void {
-  // Show startup message at INFO level or when debug is enabled
-  if (verbosityLevel !== undefined && verbosityLevel >= VerbosityLevel.INFO) {
-    logger.log('Starting VibeTunnel server...');
-  }
-  startVibeTunnelServer();
+  ensureModulesLoaded()
+    .then(() => {
+      if (verbosityLevel !== undefined && verbosityLevel >= VerbosityLevel.INFO) {
+        logger.log('Starting VibeTunnel server...');
+      }
+      startVibeTunnelServer();
+    })
+    .catch((error) => {
+      logger.error('Fatal error:', error);
+      closeLogger();
+      process.exit(1);
+    });
 }
 
-/**
- * Parse command line arguments and execute appropriate action
- */
 async function parseCommandAndExecute(): Promise<void> {
   const command = process.argv[2];
 
@@ -349,15 +331,11 @@ async function parseCommandAndExecute(): Promise<void> {
       break;
 
     default:
-      // No command provided - start the server
       handleStartServer();
       break;
   }
 }
 
-/**
- * Check if this module is being run directly (not imported)
- */
 function isMainModule(): boolean {
   return (
     !module.parent &&
@@ -367,7 +345,6 @@ function isMainModule(): boolean {
   );
 }
 
-// Main execution
 if (isMainModule()) {
   parseCommandAndExecute().catch((error) => {
     logger.error('Unhandled error in main execution:', error);

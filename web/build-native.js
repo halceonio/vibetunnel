@@ -385,18 +385,14 @@ if (typeof process !== 'undefined' && process.versions && process.versions.node)
     fs.copyFileSync(ptyNodePath, 'native/pty.node');
     console.log('  - Copied pty.node');
 
-    // Copy spawn-helper (macOS only)
-    // Note: spawn-helper is only built and required on macOS where it's used for pty_posix_spawn()
-    // On Linux, node-pty uses forkpty() directly and doesn't need spawn-helper
-    if (process.platform === 'darwin') {
-      const spawnHelperPath = path.join(nativeModulesDir, 'spawn-helper');
-      if (!fs.existsSync(spawnHelperPath)) {
-        console.error('Error: spawn-helper not found. Native module build may have failed.');
-        process.exit(1);
-      }
+    // Ensure spawn-helper is available alongside the executable (SEA requires an explicit path)
+    const spawnHelperPath = path.join(nativeModulesDir, 'spawn-helper');
+    if (fs.existsSync(spawnHelperPath)) {
       fs.copyFileSync(spawnHelperPath, 'native/spawn-helper');
       fs.chmodSync('native/spawn-helper', 0o755);
       console.log('  - Copied spawn-helper');
+    } else {
+      console.warn('  - spawn-helper not found; continuing (not required on this platform)');
     }
 
     // Copy authenticate_pam.node

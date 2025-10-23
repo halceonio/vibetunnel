@@ -39,7 +39,7 @@ const tty = __importStar(require("tty"));
 const terminal_1 = require("./terminal");
 const utils_1 = require("./utils");
 let pty;
-let helperPath;
+let helperPath = '';
 // Check if running in SEA (Single Executable Application) context
 if (process.env.VIBETUNNEL_SEA) {
     // In SEA mode, load native module using process.dlopen
@@ -54,11 +54,14 @@ if (process.env.VIBETUNNEL_SEA) {
     else {
         throw new Error(`Could not find pty.node next to executable at: ${ptyPath}`);
     }
-    // Set spawn-helper path for macOS only (Linux doesn't use it)
-    if (process.platform === 'darwin') {
-        helperPath = path.join(execDir, 'spawn-helper');
-        if (!fs.existsSync(helperPath)) {
-            console.warn(`spawn-helper not found at ${helperPath}, PTY operations may fail`);
+    const spawnHelperCandidate = path.join(execDir, 'spawn-helper');
+    if (fs.existsSync(spawnHelperCandidate)) {
+        helperPath = spawnHelperCandidate;
+    }
+    else {
+        helperPath = '';
+        if (process.platform === 'darwin') {
+            console.warn(`spawn-helper not found at ${spawnHelperCandidate}, PTY operations may fail`);
         }
     }
 }

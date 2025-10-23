@@ -174,6 +174,17 @@ export class PtyManager extends EventEmitter {
     try {
       logger.log('Initializing PtyManager...');
       pty = await import('node-pty');
+
+      if (!process.env.NODE_PTY_SPAWN_HELPER) {
+        const helperCandidate = path.join(path.dirname(process.execPath), 'spawn-helper');
+        if (fs.existsSync(helperCandidate)) {
+          process.env.NODE_PTY_SPAWN_HELPER = helperCandidate;
+          logger.debug(`Configured NODE_PTY_SPAWN_HELPER to ${helperCandidate}`);
+        } else {
+          logger.debug('spawn-helper helper binary not found alongside executable; relying on system defaults');
+        }
+      }
+
       PtyManager.initialized = true;
       logger.log('✅ PtyManager initialized successfully');
     } catch (error) {
@@ -480,6 +491,14 @@ export class PtyManager extends EventEmitter {
 
         // Provide better error messages for common issues
         let errorMessage = spawnError instanceof Error ? spawnError.message : String(spawnError);
+        const err = spawnError as NodeJS.ErrnoException;
+        logger.debug('Spawn error metadata:', {
+          code: err?.code,
+          errno: err?.errno,
+          syscall: err?.syscall,
+          path: err?.path,
+          spawnHelper: process.env.NODE_PTY_SPAWN_HELPER,
+        });
 
         const errorCode =
           spawnError instanceof Error && 'code' in spawnError
@@ -493,6 +512,12 @@ export class PtyManager extends EventEmitter {
           errorMessage = `Failed to allocate terminal for '${command[0]}'. This may occur if the command doesn't exist or the system cannot create a pseudo-terminal.`;
         } else if (errorMessage.includes('cwd') || errorMessage.includes('working directory')) {
           errorMessage = `Working directory does not exist: '${workingDir}'`;
+        } else if (errorMessage.includes('Usage: pty.fork')) {
+          const helperPath = process.env.NODE_PTY_SPAWN_HELPER;
+          const helperHint = helperPath ? ` (expected helper at ${helperPath})` : '';
+          errorMessage =
+            `Failed to spawn PTY for '${command[0]}'. node-pty reported a usage error` +
+            `${helperHint}. Verify the command is installed and the spawn-helper binary is accessible.`;
         }
 
         // Log the error with better serialization
@@ -503,6 +528,10 @@ export class PtyManager extends EventEmitter {
                 message: spawnError.message,
                 stack: spawnError.stack,
                 code: (spawnError as NodeJS.ErrnoException).code,
+                errno: (spawnError as NodeJS.ErrnoException).errno,
+                syscall: (spawnError as NodeJS.ErrnoException).syscall,
+                path: (spawnError as NodeJS.ErrnoException).path,
+                spawnHelper: process.env.NODE_PTY_SPAWN_HELPER,
               }
             : spawnError;
         logger.error(`Failed to spawn PTY for command '${command.join(' ')}':`, errorDetails);
