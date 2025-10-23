@@ -402,12 +402,15 @@ export class PtyManager extends EventEmitter {
       let ptyProcess: IPty;
       try {
         // Set up environment like Linux implementation
-        const ptyEnv = {
+        const mergedEnv: NodeJS.ProcessEnv = {
           ...process.env,
+          ...(options.env ?? {}),
           TERM: term,
           // Set session ID to prevent recursive vt calls and for debugging
           VIBETUNNEL_SESSION_ID: sessionId,
         };
+
+        const envOverrideCount = options.env ? Object.keys(options.env).length : 0;
 
         // Debug log the spawn parameters
         logger.debug('PTY spawn parameters:', {
@@ -418,8 +421,9 @@ export class PtyManager extends EventEmitter {
             cols: cols !== undefined ? cols : 'terminal default',
             rows: rows !== undefined ? rows : 'terminal default',
             cwd: workingDir,
-            hasEnv: !!ptyEnv,
-            envKeys: Object.keys(ptyEnv).length,
+            hasEnv: true,
+            envKeys: Object.keys(mergedEnv).length,
+            envOverrides: envOverrideCount,
           },
         });
 
@@ -427,7 +431,7 @@ export class PtyManager extends EventEmitter {
         const spawnOptions: IPtyForkOptions = {
           name: term,
           cwd: workingDir,
-          env: ptyEnv,
+          env: mergedEnv,
         };
 
         // Only add dimensions if they're explicitly provided

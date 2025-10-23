@@ -1,7 +1,6 @@
 import type { FSWatcher } from 'chokidar';
 import { watch } from 'chokidar';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { z } from 'zod';
 import {
@@ -11,6 +10,7 @@ import {
   type VibeTunnelConfig,
 } from '../../types/config.js';
 import { createLogger } from '../utils/logger.js';
+import { getVibeTunnelRootDir } from '../utils/vt-paths.js';
 
 const logger = createLogger('config-service');
 
@@ -83,7 +83,7 @@ const ConfigSchema = z.object({
  * Service for managing VibeTunnel configuration with file persistence and live reloading.
  *
  * The ConfigService handles loading, saving, and watching the VibeTunnel configuration file
- * stored in the user's home directory at `~/.vibetunnel/config.json`. It provides validation
+ * stored under the configured VibeTunnel root directory (default: `~/.vibetunnel/config.json`). It provides validation
  * using Zod schemas, automatic file watching for live reloading, and event-based notifications
  * when configuration changes occur.
  *
@@ -121,14 +121,16 @@ const ConfigSchema = z.object({
  * ```
  */
 export class ConfigService {
+  private rootDir: string;
   private configDir: string;
   private configPath: string;
   private config: VibeTunnelConfig = DEFAULT_CONFIG;
   private watcher?: FSWatcher;
   private configChangeCallbacks: Set<(config: VibeTunnelConfig) => void> = new Set();
 
-  constructor() {
-    this.configDir = path.join(os.homedir(), '.vibetunnel');
+  constructor(rootDir?: string) {
+    this.rootDir = rootDir ? path.resolve(rootDir) : getVibeTunnelRootDir();
+    this.configDir = this.rootDir;
     this.configPath = path.join(this.configDir, 'config.json');
     this.loadConfig();
   }

@@ -11,6 +11,7 @@ export const SESSION_FORM_STORAGE_KEYS = {
   COMMAND: 'vibetunnel_last_command',
   SPAWN_WINDOW: 'vibetunnel_spawn_window',
   TITLE_MODE: 'vibetunnel_title_mode',
+  ENV_VARS: 'vibetunnel_env_vars',
 } as const;
 
 /**
@@ -21,6 +22,7 @@ export interface SessionFormData {
   command?: string;
   spawnWindow?: boolean;
   titleMode?: TitleMode;
+  envVars?: string;
 }
 
 /**
@@ -32,12 +34,14 @@ export function loadSessionFormData(): SessionFormData {
     const command = localStorage.getItem(SESSION_FORM_STORAGE_KEYS.COMMAND) || undefined;
     const spawnWindowStr = localStorage.getItem(SESSION_FORM_STORAGE_KEYS.SPAWN_WINDOW);
     const titleModeStr = localStorage.getItem(SESSION_FORM_STORAGE_KEYS.TITLE_MODE);
+    const envVars = localStorage.getItem(SESSION_FORM_STORAGE_KEYS.ENV_VARS) || undefined;
 
     return {
       workingDir,
       command,
       spawnWindow: spawnWindowStr !== null ? spawnWindowStr === 'true' : undefined,
       titleMode: titleModeStr ? (titleModeStr as TitleMode) : undefined,
+      envVars,
     };
   } catch (error) {
     logger.warn('Failed to load from localStorage:', error);
@@ -62,6 +66,13 @@ export function saveSessionFormData(data: SessionFormData): void {
     }
     if (data.titleMode !== undefined) {
       localStorage.setItem(SESSION_FORM_STORAGE_KEYS.TITLE_MODE, data.titleMode);
+    }
+    if (data.envVars !== undefined) {
+      if (data.envVars.trim()) {
+        localStorage.setItem(SESSION_FORM_STORAGE_KEYS.ENV_VARS, data.envVars);
+      } else {
+        localStorage.removeItem(SESSION_FORM_STORAGE_KEYS.ENV_VARS);
+      }
     }
   } catch (error) {
     logger.warn('Failed to save to localStorage:', error);

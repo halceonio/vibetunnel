@@ -6,9 +6,12 @@ import { suppressXtermErrors } from './shared/suppress-xterm-errors.js';
 
 suppressXtermErrors();
 
+import * as fs from 'fs';
+import * as path from 'path';
 import { startVibeTunnelForward } from './server/fwd.js';
 import { startVibeTunnelServer } from './server/server.js';
 import { closeLogger, createLogger, initLogger, VerbosityLevel } from './server/utils/logger.js';
+import { setVibeTunnelRootDir } from './server/utils/vt-paths.js';
 import { parseVerbosityFromEnv } from './server/utils/verbosity-parser.js';
 import { VERSION } from './server/version.js';
 
@@ -24,6 +27,70 @@ const verbosityLevel = parseVerbosityFromEnv();
 
 // Check for legacy debug mode (for backward compatibility with initLogger)
 const debugMode = process.env.VIBETUNNEL_DEBUG === '1' || process.env.VIBETUNNEL_DEBUG === 'true';
+
+const SERVER_ONLY_COMMANDS = new Set([undefined, '', 'help', 'version']);
+const NON_SERVER_COMMANDS = new Set([
+  'fwd',
+  'follow',
+  'unfollow',
+  'git-event',
+  'systemd',
+  'status',
+]);
+
+function extractConfigDir(argv: string[]): string | null {
+  const primaryArg = argv[2];
+  const isServerCommand =
+    SERVER_ONLY_COMMANDS.has(primaryArg as string | undefined) ||
+    (primaryArg?.startsWith('-') ?? false) ||
+    !NON_SERVER_COMMANDS.has(primaryArg ?? '');
+
+  if (!isServerCommand) {
+    return null;
+  }
+
+  for (let i = 2; i < argv.length; i++) {
+    const arg = argv[i];
+    if (arg === '--') {
+      break;
+    }
+    if (arg === '--config-dir') {
+      const value = argv[i + 1];
+      if (!value) {
+        console.error('--config-dir requires a path argument');
+        process.exit(1);
+      }
+      return value;
+    }
+
+    if (arg.startsWith('--config-dir=')) {
+      return arg.slice('--config-dir='.length);
+    }
+  }
+
+  return null;
+}
+
+const configDirArg = extractConfigDir(process.argv);
+if (configDirArg) {
+  const resolvedConfigDir = path.resolve(configDirArg);
+  try {
+    const stats = fs.statSync(resolvedConfigDir);
+    if (!stats.isDirectory()) {
+      console.error(`Config directory is not a directory: ${resolvedConfigDir}`);
+      process.exit(1);
+    }
+  } catch (error) {
+    console.error(`Config directory does not exist: ${resolvedConfigDir}`);
+    if (error instanceof Error && error.message) {
+      console.error(error.message);
+    }
+    process.exit(1);
+  }
+
+  process.env.VIBETUNNEL_ROOT_DIR = resolvedConfigDir;
+  setVibeTunnelRootDir(resolvedConfigDir);
+}
 
 initLogger(debugMode, verbosityLevel);
 const logger = createLogger('cli');
@@ -87,6 +154,7 @@ function printHelp(): void {
   console.log('  vibetunnel fwd abc123 "ls -la"');
   console.log('  vibetunnel systemd');
   console.log('  vibetunnel systemd uninstall');
+  console.log('  vibetunnel --config-dir /srv/vibe --port 4100');
   console.log('');
   console.log('For more options, run: vibetunnel --help');
 }

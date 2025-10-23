@@ -29,8 +29,9 @@ export class FormOptionsSection extends LitElement {
   @property({ type: String }) selectedWorktree?: string;
   @property({ type: Boolean }) disabled = false;
   @property({ type: Boolean }) isCreating = false;
+  @property({ type: String }) envText = '';
 
-  @state() private expanded = false;
+  @state() private expanded = true;
 
   private handleToggle() {
     this.expanded = !this.expanded;
@@ -51,6 +52,17 @@ export class FormOptionsSection extends LitElement {
     this.dispatchEvent(
       new CustomEvent('title-mode-changed', {
         detail: { mode: select.value },
+        bubbles: true,
+        composed: true,
+      })
+    );
+  }
+
+  private handleEnvChange(e: Event) {
+    const textarea = e.target as HTMLTextAreaElement;
+    this.dispatchEvent(
+      new CustomEvent('env-vars-changed', {
+        detail: { value: textarea.value },
         bubbles: true,
         composed: true,
       })
@@ -152,6 +164,23 @@ export class FormOptionsSection extends LitElement {
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
                     </svg>
                   </div>
+                </div>
+              </div>
+
+              <!-- Environment Variables -->
+              <div class="bg-bg-elevated border border-border/50 rounded-lg p-2 sm:p-3 lg:p-4 mb-2 sm:mb-3">
+                <div class="flex flex-col gap-1">
+                  <span class="text-primary text-[10px] sm:text-xs lg:text-sm font-medium">Environment Variables</span>
+                  <p class="text-[9px] sm:text-[10px] lg:text-xs text-text-muted">
+                    One per line, e.g. <code class="font-mono">API_TOKEN=secret</code>. Lines starting with <code class="font-mono">#</code> are ignored.
+                  </p>
+                  <textarea
+                    class="mt-1 bg-bg-tertiary border border-border/50 rounded-lg px-1.5 py-1.5 sm:px-2 sm:py-2 lg:px-3 lg:py-2 text-text text-[10px] sm:text-xs lg:text-sm font-mono resize-y min-h-[64px] sm:min-h-[88px] focus:border-primary focus:outline-none"
+                    .value=${this.envText}
+                    @input=${this.handleEnvChange}
+                    placeholder="NODE_ENV=production\nAPI_TOKEN=secret"
+                    ?disabled=${this.disabled || this.isCreating}
+                  ></textarea>
                 </div>
               </div>
 

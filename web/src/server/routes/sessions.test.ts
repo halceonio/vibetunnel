@@ -1,5 +1,7 @@
 import type { Request, Response } from 'express';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_CONFIG } from '../../types/config';
+import type { ConfigService } from '../services/config-service';
 import { detectGitInfo } from '../utils/git-info';
 import { controlUnixHandler } from '../websocket/control-unix-handler';
 import { createSessionRoutes, requestTerminalSpawn } from './sessions';
@@ -46,6 +48,7 @@ describe('sessions routes', () => {
   let mockActivityMonitor: {
     getSessionActivity: ReturnType<typeof vi.fn>;
   };
+  let mockConfigService: ConfigService;
 
   beforeEach(() => {
     vi.clearAllMocks();
@@ -108,6 +111,13 @@ describe('sessions routes', () => {
     mockActivityMonitor = {
       getSessionActivity: vi.fn(),
     };
+
+    mockConfigService = {
+      getConfig: vi.fn(() => ({
+        ...DEFAULT_CONFIG,
+        repositoryBasePath: process.cwd(),
+      })),
+    } as unknown as ConfigService;
   });
 
   afterEach(() => {
@@ -126,6 +136,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       // Find the /server/status route handler
@@ -175,6 +186,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: true,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       // Find the /server/status route handler
@@ -221,6 +233,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (
@@ -283,6 +296,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       // Find the POST /sessions route handler
@@ -343,6 +357,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       interface RouteLayer {
@@ -405,6 +420,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       interface RouteLayer {
@@ -465,6 +481,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       interface RouteLayer {
@@ -521,6 +538,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       interface RouteLayer {
@@ -587,6 +605,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (
@@ -641,6 +660,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (
@@ -700,6 +720,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (
@@ -751,6 +772,7 @@ describe('sessions routes', () => {
         remoteRegistry: null,
         isHQMode: false,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (
@@ -795,6 +817,115 @@ describe('sessions routes', () => {
       const parsedDate = new Date(capturedResponse.createdAt);
       expect(parsedDate.toISOString()).toBe(capturedResponse.createdAt);
       expect(parsedDate.getTime()).toBeCloseTo(Date.now(), -2); // Within ~100ms
+    });
+  });
+
+  describe('POST /sessions - Environment Variables', () => {
+    it('should pass sanitized environment variables to the PTY manager', async () => {
+      const router = createSessionRoutes({
+        ptyManager: mockPtyManager,
+        terminalManager: mockTerminalManager,
+        streamWatcher: mockStreamWatcher,
+        remoteRegistry: null,
+        isHQMode: false,
+        activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
+      });
+
+      interface RouteLayer {
+        route?: {
+          path: string;
+          methods: { post?: boolean };
+          stack: Array<{ handle: (req: Request, res: Response) => Promise<void> }>;
+        };
+      }
+
+      const routes = (router as unknown as { stack: RouteLayer[] }).stack;
+      const createRoute = routes.find(
+        (r) => r.route && r.route.path === '/sessions' && r.route.methods.post
+      );
+
+      const mockReq = {
+        body: {
+          command: ['npm', 'run', 'dev'],
+          workingDir: '/test/worktree',
+          env: {
+            NODE_ENV: 'test',
+            API_TOKEN: 'abc123',
+          },
+        },
+      } as Request;
+
+      const mockRes = {
+        json: vi.fn(),
+        status: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+
+      if (!createRoute?.route?.stack?.[0]) {
+        throw new Error('Could not find POST /sessions route handler');
+      }
+
+      await createRoute.route.stack[0].handle(mockReq, mockRes);
+
+      expect(mockPtyManager.createSession).toHaveBeenCalledWith(
+        ['npm', 'run', 'dev'],
+        expect.objectContaining({
+          env: {
+            NODE_ENV: 'test',
+            API_TOKEN: 'abc123',
+          },
+        })
+      );
+    });
+
+    it('should reject invalid environment variable payloads', async () => {
+      const router = createSessionRoutes({
+        ptyManager: mockPtyManager,
+        terminalManager: mockTerminalManager,
+        streamWatcher: mockStreamWatcher,
+        remoteRegistry: null,
+        isHQMode: false,
+        activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
+      });
+
+      interface RouteLayer {
+        route?: {
+          path: string;
+          methods: { post?: boolean };
+          stack: Array<{ handle: (req: Request, res: Response) => Promise<void> }>;
+        };
+      }
+
+      const routes = (router as unknown as { stack: RouteLayer[] }).stack;
+      const createRoute = routes.find(
+        (r) => r.route && r.route.path === '/sessions' && r.route.methods.post
+      );
+
+      const mockReq = {
+        body: {
+          command: ['npm', 'run', 'dev'],
+          workingDir: '/test/worktree',
+          env: 'NODE_ENV=test',
+        },
+      } as Request;
+
+      const mockRes = {
+        json: vi.fn().mockReturnThis(),
+        status: vi.fn().mockReturnThis(),
+      } as unknown as Response;
+
+      if (!createRoute?.route?.stack?.[0]) {
+        throw new Error('Could not find POST /sessions route handler');
+      }
+
+      await createRoute.route.stack[0].handle(mockReq, mockRes);
+
+      expect(mockRes.status).toHaveBeenCalledWith(400);
+      expect(mockRes.json).toHaveBeenCalledWith(
+        expect.objectContaining({ error: 'Environment variables must be an object of key/value pairs' })
+      );
+      expect(mockPtyManager.createSession).not.toHaveBeenCalled();
     });
   });
 
@@ -843,6 +974,7 @@ describe('sessions routes', () => {
         remoteRegistry: mockRemoteRegistry,
         isHQMode: true,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (
@@ -934,6 +1066,7 @@ describe('sessions routes', () => {
         remoteRegistry: mockRemoteRegistry,
         isHQMode: true,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (
@@ -1003,6 +1136,7 @@ describe('sessions routes', () => {
         remoteRegistry: mockRemoteRegistry,
         isHQMode: true,
         activityMonitor: mockActivityMonitor,
+        configService: mockConfigService,
       });
 
       const routes = (

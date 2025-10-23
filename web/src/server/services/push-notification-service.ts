@@ -7,12 +7,12 @@
  */
 
 import * as fs from 'fs/promises';
-import * as os from 'os';
 import * as path from 'path';
 import type webpush from 'web-push';
 import { createLogger } from '../utils/logger.js';
 import type { VapidManager } from '../utils/vapid-manager.js';
 import type { BellNotificationPayload } from './bell-event-handler.js';
+import { resolveRootPath } from '../utils/vt-paths.js';
 
 const logger = createLogger('push-notification-service');
 
@@ -69,7 +69,7 @@ export class PushNotificationService {
 
   constructor(vapidManager: VapidManager) {
     this.vapidManager = vapidManager;
-    const storageDir = path.join(os.homedir(), '.vibetunnel/notifications');
+    const storageDir = resolveRootPath('notifications');
     this.subscriptionsFile = path.join(storageDir, 'subscriptions.json');
   }
 

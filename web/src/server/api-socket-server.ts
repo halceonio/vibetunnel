@@ -5,7 +5,6 @@
 
 import * as fs from 'fs';
 import * as net from 'net';
-import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import {
@@ -22,6 +21,7 @@ import {
 import { createGitError } from './utils/git-error.js';
 import { areHooksInstalled, installGitHooks, uninstallGitHooks } from './utils/git-hooks.js';
 import { createLogger } from './utils/logger.js';
+import { getControlDir } from './utils/vt-paths.js';
 import { prettifyPath } from './utils/path-prettify.js';
 import { BUILD_DATE, VERSION } from './version.js';
 import { createControlEvent } from './websocket/control-protocol.js';
@@ -61,7 +61,7 @@ export class ApiSocketServer {
 
   constructor() {
     // Use control directory from environment or default
-    const controlDir = process.env.VIBETUNNEL_CONTROL_DIR || path.join(os.homedir(), '.vibetunnel');
+    const controlDir = getControlDir();
     const socketDir = controlDir;
 
     // Ensure directory exists

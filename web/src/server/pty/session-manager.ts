@@ -60,10 +60,10 @@
 import chalk from 'chalk';
 import { spawnSync } from 'child_process';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import type { Session, SessionInfo } from '../../shared/types.js';
 import { createLogger } from '../utils/logger.js';
+import { getControlDir } from '../utils/vt-paths.js';
 import { VERSION } from '../version.js';
 import { ProcessUtils } from './process-utils.js';
 import { PtyError } from './types.js';
@@ -75,7 +75,7 @@ export class SessionManager {
   private static readonly SESSION_ID_REGEX = /^[a-zA-Z0-9_-]+$/;
 
   constructor(controlPath?: string) {
-    this.controlPath = controlPath || path.join(os.homedir(), '.vibetunnel', 'control');
+    this.controlPath = controlPath ? path.resolve(controlPath) : getControlDir();
     logger.debug(`initializing session manager with control path: ${this.controlPath}`);
     this.ensureControlDirectory();
   }

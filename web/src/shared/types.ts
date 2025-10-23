@@ -160,6 +160,7 @@ export interface SessionCreateOptions {
   gitHasChanges?: boolean;
   gitIsWorktree?: boolean;
   gitMainRepoPath?: string;
+  env?: Record<string, string>;
 }
 
 /**

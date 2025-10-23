@@ -12,9 +12,11 @@ import type { SessionRoutesConfig } from '../../server/routes/sessions.js';
 import { createSessionRoutes } from '../../server/routes/sessions.js';
 import { createWorktreeRoutes } from '../../server/routes/worktrees.js';
 import { ActivityMonitor } from '../../server/services/activity-monitor.js';
+import type { ConfigService } from '../../server/services/config-service.js';
 import { RemoteRegistry } from '../../server/services/remote-registry.js';
 import { StreamWatcher } from '../../server/services/stream-watcher.js';
 import { TerminalManager } from '../../server/services/terminal-manager.js';
+import { DEFAULT_CONFIG } from '../../types/config.js';
 
 export interface TestServerOptions {
   controlPath?: string;
@@ -60,6 +62,12 @@ export async function createTestServer(options: TestServerOptions = {}): Promise
   const activityMonitor = new ActivityMonitor();
   const streamWatcher = new StreamWatcher();
   const remoteRegistry = isHQMode ? new RemoteRegistry() : null;
+  const configService = {
+    getConfig: () => ({
+      ...DEFAULT_CONFIG,
+      repositoryBasePath: process.cwd(),
+    }),
+  } as unknown as ConfigService;
 
   // Create Express app
   const app = express();
@@ -73,6 +81,7 @@ export async function createTestServer(options: TestServerOptions = {}): Promise
     remoteRegistry,
     isHQMode,
     activityMonitor,
+    configService,
   };
 
   // Mount routes based on options

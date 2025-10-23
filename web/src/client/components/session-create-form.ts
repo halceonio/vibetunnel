@@ -108,6 +108,7 @@ export class SessionCreateForm extends LitElement {
   // State properties for UI
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Used in template
   @state() private selectedQuickStart = '';
+  @state() private envText = '';
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Used in discoverDirectories method
   @state() private isDiscovering = false;
   // biome-ignore lint/correctness/noUnusedPrivateClassMembers: Used in checkGitEnabled method
@@ -211,6 +212,7 @@ export class SessionCreateForm extends LitElement {
     // Priority: savedWorkingDir > appRepoBasePath > default
     this.workingDir = formData.workingDir || appRepoBasePath || DEFAULT_REPOSITORY_BASE_PATH;
     this.command = formData.command || 'zsh';
+    this.envText = formData.envVars || '';
 
     // For spawn window, use saved value or default to false
     this.spawnWindow = formData.spawnWindow ?? false;
@@ -231,6 +233,7 @@ export class SessionCreateForm extends LitElement {
       command,
       spawnWindow: this.spawnWindow,
       titleMode: this.titleMode,
+      envVars: this.envText,
     });
   }
 
@@ -275,6 +278,11 @@ export class SessionCreateForm extends LitElement {
     } catch (error) {
       logger.error('Failed to save quick start commands:', error);
     }
+  }
+
+  private handleEnvVarsChanged(e: CustomEvent<{ value: string }>) {
+    this.envText = e.detail.value;
+    this.saveToLocalStorage();
   }
 
   private async checkServerStatus() {
@@ -334,6 +342,7 @@ export class SessionCreateForm extends LitElement {
         this.spawnWindow = false;
         this.titleMode = TitleMode.DYNAMIC;
         this.branchSwitchWarning = undefined;
+        this.envText = '';
 
         // Then load from localStorage which may override the defaults
         // Don't await since we're in updated() lifecycle method
@@ -445,6 +454,43 @@ export class SessionCreateForm extends LitElement {
     this.showFileBrowser = false;
   }
 
+  private parseEnvironmentVariables(text: string): Record<string, string> | undefined {
+    if (!text || text.trim() === '') {
+      return undefined;
+    }
+
+    const env: Record<string, string> = {};
+    const lines = text.split(/\r?\n/);
+
+    lines.forEach((rawLine, index) => {
+      const trimmed = rawLine.trim();
+
+      if (!trimmed || trimmed.startsWith('#')) {
+        return;
+      }
+
+      const line = trimmed.startsWith('export ')
+        ? trimmed.slice('export '.length).trim()
+        : trimmed;
+
+      const separatorIndex = line.indexOf('=');
+      if (separatorIndex <= 0) {
+        throw new Error(`Invalid environment variable on line ${index + 1}. Use KEY=value format.`);
+      }
+
+      const key = line.slice(0, separatorIndex).trim();
+      const value = line.slice(separatorIndex + 1);
+
+      if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw new Error(`Invalid environment variable name '${key}' on line ${index + 1}.`);
+      }
+
+      env[key] = value;
+    });
+
+    return Object.keys(env).length > 0 ? env : undefined;
+  }
+
   private async handleCreate() {
     if (!this.workingDir?.trim() || !this.command?.trim()) {
       this.dispatchEvent(
@@ -456,6 +502,22 @@ export class SessionCreateForm extends LitElement {
     }
 
     this.isCreating = true;
+
+    let envOverrides: Record<string, string> | undefined;
+    try {
+      envOverrides = this.parseEnvironmentVariables(this.envText);
+    } catch (error) {
+      this.isCreating = false;
+      const message = error instanceof Error ? error.message : 'Invalid environment variables';
+      this.dispatchEvent(
+        new CustomEvent('error', {
+          detail: message,
+          bubbles: true,
+          composed: true,
+        })
+      );
+      return;
+    }
 
     // Determine if we're actually spawning a terminal window
     const effectiveSpawnTerminal = this.spawnWindow && this.macAppConnected;
@@ -520,6 +582,10 @@ export class SessionCreateForm extends LitElement {
     // Add session name if provided
     if (this.sessionName?.trim()) {
       sessionData.name = this.sessionName.trim();
+    }
+
+    if (envOverrides) {
+      sessionData.env = envOverrides;
     }
 
     // Handle follow mode - only enable when a worktree is selected
@@ -1223,9 +1289,11 @@ export class SessionCreateForm extends LitElement {
               .selectedWorktree=${this.selectedWorktree}
               .disabled=${this.disabled}
               .isCreating=${this.isCreating}
+              .envText=${this.envText}
               @spawn-window-changed=${this.handleSpawnWindowChanged}
               @title-mode-changed=${this.handleTitleModeChanged}
               @follow-mode-changed=${this.handleFollowModeChanged}
+              @env-vars-changed=${this.handleEnvVarsChanged}
             ></form-options-section>
 
             <div class="flex gap-1.5 sm:gap-2 mt-2 sm:mt-3">

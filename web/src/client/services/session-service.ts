@@ -59,6 +59,7 @@ const logger = createLogger('session-service');
  * @property titleMode - How to handle terminal title updates from applications
  * @property gitRepoPath - Path to Git repository (enables Git integration features)
  * @property gitBranch - Current Git branch name (for display and tracking)
+ * @property env - Key/value environment variables injected before the command starts
  */
 export interface SessionCreateData {
   command: string[];
@@ -70,6 +71,7 @@ export interface SessionCreateData {
   titleMode?: TitleMode;
   gitRepoPath?: string;
   gitBranch?: string;
+  env?: Record<string, string>;
 }
 
 /**

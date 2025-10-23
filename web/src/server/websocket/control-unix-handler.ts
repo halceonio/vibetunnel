@@ -5,6 +5,7 @@ import * as path from 'node:path';
 import { v4 as uuidv4 } from 'uuid';
 import type { WebSocket } from 'ws';
 import { createLogger } from '../utils/logger.js';
+import { getControlDir } from '../utils/vt-paths.js';
 import type {
   ControlCategory,
   ControlMessage,
@@ -148,8 +149,7 @@ export class ControlUnixHandler {
 
   constructor() {
     // Use control directory from environment or default
-    const home = process.env.HOME || '/tmp';
-    const controlDir = process.env.VIBETUNNEL_CONTROL_DIR || path.join(home, '.vibetunnel');
+    const controlDir = getControlDir();
     const socketDir = controlDir;
 
     // Ensure directory exists

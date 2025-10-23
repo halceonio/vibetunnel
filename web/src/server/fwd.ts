@@ -13,7 +13,6 @@
 
 import chalk from 'chalk';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { type SessionInfo, TitleMode } from '../shared/types.js';
@@ -35,6 +34,7 @@ import { generateSessionName } from './utils/session-naming.js';
 import { generateTitleSequence } from './utils/terminal-title.js';
 import { parseVerbosityFromEnv } from './utils/verbosity-parser.js';
 import { BUILD_DATE, GIT_COMMIT, VERSION } from './version.js';
+import { getControlDir, getLogFilePath } from './utils/vt-paths.js';
 
 const logger = createLogger('fwd');
 const _execFile = promisify(require('child_process').execFile);
@@ -57,7 +57,7 @@ function showUsage() {
   );
   console.log('                        (defaults to error)');
   console.log('  --log-file <path>     Override default log file location');
-  console.log('                        (defaults to ~/.vibetunnel/log.txt)');
+  console.log(`                        (defaults to ${getLogFilePath()})`);
   console.log('');
   console.log('Title Modes:');
   console.log('  none     - No title management (default)');
@@ -207,7 +207,7 @@ export async function startVibeTunnelForward(args: string[]) {
     }
 
     // Initialize session manager
-    const controlPath = path.join(os.homedir(), '.vibetunnel', 'control');
+    const controlPath = getControlDir();
     const sessionManager = new SessionManager(controlPath);
 
     // Validate session ID format for security
@@ -324,7 +324,7 @@ export async function startVibeTunnelForward(args: string[]) {
   const cwd = process.cwd();
 
   // Initialize PTY manager with fallback support
-  const controlPath = path.join(os.homedir(), '.vibetunnel', 'control');
+  const controlPath = getControlDir();
   logger.debug(`Control path: ${controlPath}`);
 
   // Initialize PtyManager before creating instance

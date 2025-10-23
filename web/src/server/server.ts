@@ -46,7 +46,14 @@ import { SessionMonitor } from './services/session-monitor.js';
 import { StreamWatcher } from './services/stream-watcher.js';
 import { tailscaleServeService } from './services/tailscale-serve-service.js';
 import { TerminalManager } from './services/terminal-manager.js';
+import { resolveAbsolutePath } from './utils/path-utils.js';
 import { closeLogger, createLogger, initLogger, setDebugMode } from './utils/logger.js';
+import {
+  ensureRootPath,
+  getControlDir,
+  getVibeTunnelRootDir,
+  setVibeTunnelRootDir,
+} from './utils/vt-paths.js';
 import { VapidManager } from './utils/vapid-manager.js';
 import { getVersionInfo, printVersionBanner } from './version.js';
 import { controlUnixHandler } from './websocket/control-unix-handler.js';
@@ -101,6 +108,7 @@ interface Config {
   noHqAuth: boolean;
   // mDNS advertisement
   enableMDNS: boolean;
+  configDir: string | null;
 }
 
 // Show help message
@@ -120,6 +128,7 @@ Options:
   --no-auth             Disable authentication (auto-login as current user)
   --allow-local-bypass  Allow localhost connections to bypass authentication
   --local-auth-token <token>  Token for localhost authentication bypass
+  --config-dir <path>   Root directory for VibeTunnel data (default: ~/.vibetunnel)
   --enable-tailscale-serve  Enable Tailscale Serve integration (auto-manages proxy and auth)
   --debug               Enable debug logging
 
@@ -197,6 +206,7 @@ function parseArgs(): Config {
     noHqAuth: false,
     // mDNS advertisement
     enableMDNS: true, // Enable mDNS by default
+    configDir: null as string | null,
   };
 
   // Check for help flag first
@@ -258,6 +268,22 @@ function parseArgs(): Config {
     } else if (args[i] === '--local-auth-token' && i + 1 < args.length) {
       config.localAuthToken = args[i + 1];
       i++; // Skip the token value in next iteration
+    } else if (args[i] === '--config-dir') {
+      if (i + 1 >= args.length) {
+        logger.error('--config-dir requires a path argument');
+        process.exit(1);
+      }
+      const configDir = resolveAbsolutePath(args[i + 1]);
+      config.configDir = configDir;
+      i++; // Skip the token value in next iteration
+    } else if (args[i].startsWith('--config-dir=')) {
+      const value = args[i].slice('--config-dir='.length);
+      if (!value) {
+        logger.error('--config-dir requires a path argument');
+        process.exit(1);
+      }
+      const configDir = resolveAbsolutePath(value);
+      config.configDir = configDir;
     } else if (args[i] === '--enable-tailscale-serve') {
       config.enableTailscaleServe = true;
     } else if (args[i] === '--no-hq-auth') {
@@ -347,6 +373,24 @@ function validateConfig(config: ReturnType<typeof parseArgs>) {
     logger.warn('--no-hq-auth is enabled: Remote servers can register without authentication');
     logger.warn('This should only be used for testing!');
   }
+
+  if (config.configDir) {
+    if (!fs.existsSync(config.configDir)) {
+      logger.error(`Config directory does not exist: ${config.configDir}`);
+      process.exit(1);
+    }
+
+    try {
+      const stats = fs.statSync(config.configDir);
+      if (!stats.isDirectory()) {
+        logger.error(`Config directory is not a directory: ${config.configDir}`);
+        process.exit(1);
+      }
+    } catch (error) {
+      logger.error(`Failed to access config directory '${config.configDir}':`, error);
+      process.exit(1);
+    }
+  }
 }
 
 interface AppInstance {
@@ -401,6 +445,19 @@ export async function createApp(): Promise<AppInstance> {
 
   validateConfig(config);
 
+  if (config.configDir) {
+    process.env.VIBETUNNEL_ROOT_DIR = config.configDir;
+    setVibeTunnelRootDir(config.configDir);
+  } else if (process.env.VIBETUNNEL_ROOT_DIR) {
+    setVibeTunnelRootDir(process.env.VIBETUNNEL_ROOT_DIR);
+  } else {
+    setVibeTunnelRootDir(getVibeTunnelRootDir());
+  }
+
+  const rootDir = getVibeTunnelRootDir();
+  ensureRootPath();
+  logger.debug(`Using VibeTunnel root directory: ${rootDir}`);
+
   logger.log('Initializing VibeTunnel server components');
   const app = express();
   const server = createServer(app);
@@ -438,8 +495,7 @@ export async function createApp(): Promise<AppInstance> {
   logger.debug('Configured express middleware');
 
   // Control directory for session data
-  const CONTROL_DIR =
-    process.env.VIBETUNNEL_CONTROL_DIR || path.join(os.homedir(), '.vibetunnel/control');
+  const CONTROL_DIR = getControlDir();
 
   // Ensure control directory exists
   if (!fs.existsSync(CONTROL_DIR)) {
@@ -492,7 +548,7 @@ export async function createApp(): Promise<AppInstance> {
   logger.debug('Initialized activity monitor');
 
   // Initialize configuration service
-  const configService = new ConfigService();
+  const configService = new ConfigService(rootDir);
   configService.startWatching();
   logger.debug('Initialized configuration service');
 
@@ -784,8 +840,12 @@ export async function createApp(): Promise<AppInstance> {
         } else {
           // Production caching rules
           // Set longer cache for immutable assets
-          if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg|png|jpg|jpeg|gif|ico)$/)) {
+          if (filePath.match(/\.(js|css|woff2?|ttf|eot|svg)$/)) {
             res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+          }
+          // Icons and favicons change occasionally - shorter cache
+          else if (filePath.match(/\.(png|jpg|jpeg|gif|ico)$/)) {
+            res.setHeader('Cache-Control', 'public, max-age=86400');
           }
           // Shorter cache for HTML files
           else if (filePath.endsWith('.html')) {
@@ -978,6 +1038,7 @@ export async function createApp(): Promise<AppInstance> {
       remoteRegistry,
       isHQMode: config.isHQMode,
       activityMonitor,
+      configService,
     })
   );
   logger.debug('Mounted session routes');

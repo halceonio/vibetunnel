@@ -1,17 +1,21 @@
 import chalk from 'chalk';
 import { Router } from 'express';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 import { promisify } from 'util';
 import { cellsToText } from '../../shared/terminal-text-formatter.js';
 import type { ServerStatus, Session, SessionActivity, TitleMode } from '../../shared/types.js';
 import { HttpMethod } from '../../shared/types.js';
+import { DEFAULT_REPOSITORY_BASE_PATH } from '../../shared/constants.js';
 import { PtyError, type PtyManager } from '../pty/index.js';
 import type { ActivityMonitor } from '../services/activity-monitor.js';
 import type { RemoteRegistry } from '../services/remote-registry.js';
 import type { StreamWatcher } from '../services/stream-watcher.js';
 import { tailscaleServeService } from '../services/tailscale-serve-service.js';
 import type { TerminalManager } from '../services/terminal-manager.js';
+import type { ConfigService } from '../services/config-service.js';
+import type { VibeTunnelConfig } from '../../types/config.js';
 import { detectGitInfo } from '../utils/git-info.js';
 import { getDetailedGitStatus } from '../utils/git-status.js';
 import { createLogger } from '../utils/logger.js';
@@ -30,6 +34,30 @@ interface SessionRoutesConfig {
   remoteRegistry: RemoteRegistry | null;
   isHQMode: boolean;
   activityMonitor: ActivityMonitor;
+  configService: ConfigService;
+}
+
+function findFirstExistingPath(paths: Array<string | null | undefined>): string | null {
+  for (const candidate of paths) {
+    if (!candidate) continue;
+    const resolvedCandidate = resolveAbsolutePath(candidate);
+    if (fs.existsSync(resolvedCandidate)) {
+      return resolvedCandidate;
+    }
+  }
+  return null;
+}
+
+function getDefaultBaseDir(configSnapshot: VibeTunnelConfig, fallbackCwd: string): string {
+  return (
+    findFirstExistingPath([
+      configSnapshot.repositoryBasePath,
+      fallbackCwd,
+      DEFAULT_REPOSITORY_BASE_PATH,
+      os.homedir(),
+      '/',
+    ]) || fallbackCwd
+  );
 }
 
 // Helper function to resolve path with default fallback
@@ -51,8 +79,15 @@ function resolvePath(inputPath: string, defaultPath: string): string {
 
 export function createSessionRoutes(config: SessionRoutesConfig): Router {
   const router = Router();
-  const { ptyManager, terminalManager, streamWatcher, remoteRegistry, isHQMode, activityMonitor } =
-    config;
+  const {
+    ptyManager,
+    terminalManager,
+    streamWatcher,
+    remoteRegistry,
+    isHQMode,
+    activityMonitor,
+    configService,
+  } = config;
 
   // Server status endpoint
   router.get('/server/status', async (_req, res) => {
@@ -191,7 +226,17 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
 
   // Create new session (local or on remote)
   router.post('/sessions', async (req, res) => {
-    const { command, workingDir, name, remoteId, spawn_terminal, cols, rows, titleMode } = req.body;
+    const {
+      command,
+      workingDir,
+      name,
+      remoteId,
+      spawn_terminal,
+      cols,
+      rows,
+      titleMode,
+      env: envVars,
+    } = req.body;
     logger.debug(
       `creating new session: command=${JSON.stringify(command)}, remoteId=${remoteId || 'local'}, spawn_terminal=${spawn_terminal}, cols=${cols}, rows=${rows}`
     );
@@ -202,6 +247,33 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
     }
 
     try {
+      let sessionEnv: Record<string, string> | undefined;
+      if (envVars !== undefined && envVars !== null) {
+        if (typeof envVars !== 'object' || Array.isArray(envVars)) {
+          logger.warn('session creation failed: env must be an object of key/value pairs');
+          return res.status(400).json({ error: 'Environment variables must be an object of key/value pairs' });
+        }
+
+        sessionEnv = {};
+        for (const [key, value] of Object.entries(envVars)) {
+          if (typeof value !== 'string') {
+            logger.warn(`session creation failed: env value for ${key} is not a string`);
+            return res.status(400).json({
+              error: 'Environment variable values must be strings',
+            });
+          }
+
+          if (!key || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+            logger.warn(`session creation failed: invalid environment variable name '${key}'`);
+            return res.status(400).json({
+              error: `Invalid environment variable name: '${key}'`,
+            });
+          }
+
+          sessionEnv[key] = value;
+        }
+      }
+
       // If remoteId is specified and we're in HQ mode, forward to remote
       if (remoteId && isHQMode && remoteRegistry) {
         const remote = remoteRegistry.getRemote(remoteId);
@@ -228,6 +300,7 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
             cols,
             rows,
             titleMode,
+            env: sessionEnv,
             // Don't forward remoteId to avoid recursion
           }),
           signal: AbortSignal.timeout(10000), // 10 second timeout
@@ -251,12 +324,15 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
         return;
       }
 
+      const configSnapshot = configService.getConfig();
+      const defaultBaseDir = getDefaultBaseDir(configSnapshot, process.cwd());
+
       // If spawn_terminal is true, use the control socket for terminal spawning
       if (spawn_terminal) {
         try {
           // Generate session ID
           const sessionId = generateSessionId();
-          const resolvedCwd = resolvePath(workingDir, process.cwd());
+          const resolvedCwd = resolvePath(workingDir, defaultBaseDir);
           const sessionName = name || generateSessionName(command, resolvedCwd);
 
           // Detect Git information for terminal spawn
@@ -306,14 +382,34 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
       }
 
       // Create local session
-      let cwd = resolvePath(workingDir, process.cwd());
+      let cwd = resolvePath(workingDir, defaultBaseDir);
 
-      // Check if the working directory exists, fall back to process.cwd() if not
       if (!fs.existsSync(cwd)) {
+        const fallbackDir =
+          findFirstExistingPath([
+            configSnapshot.repositoryBasePath,
+            defaultBaseDir,
+            DEFAULT_REPOSITORY_BASE_PATH,
+            os.homedir(),
+            '/',
+          ]) ?? null;
+
+        if (!fallbackDir) {
+          const requestedPath = cwd;
+          logger.error(
+            `Working directory '${requestedPath}' does not exist and no fallback directory was found`
+          );
+          return res.status(500).json({
+            error: 'Failed to create session',
+            details:
+              `Working directory '${requestedPath}' does not exist and no fallback directory is available`,
+          });
+        }
+
         logger.warn(
-          `Working directory '${cwd}' does not exist, using current directory as fallback`
+          `Working directory '${cwd}' does not exist, using fallback directory '${fallbackDir}'`
         );
-        cwd = process.cwd();
+        cwd = fallbackDir;
       }
 
       const sessionName = name || generateSessionName(command, cwd);
@@ -340,6 +436,7 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
         gitHasChanges: gitInfo.gitHasChanges,
         gitIsWorktree: gitInfo.gitIsWorktree,
         gitMainRepoPath: gitInfo.gitMainRepoPath,
+        env: sessionEnv,
       });
 
       const { sessionId, sessionInfo } = result;

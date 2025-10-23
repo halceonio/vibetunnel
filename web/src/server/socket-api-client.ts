@@ -4,7 +4,6 @@
  */
 
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { VibeTunnelSocketClient } from './pty/socket-client.js';
 import {
@@ -16,6 +15,7 @@ import {
   MessageType,
 } from './pty/socket-protocol.js';
 import { createLogger } from './utils/logger.js';
+import { getControlDir } from './utils/vt-paths.js';
 
 const logger = createLogger('socket-api');
 
@@ -39,7 +39,7 @@ export class SocketApiClient {
 
   constructor() {
     // Use control directory from environment or default
-    this.controlDir = process.env.VIBETUNNEL_CONTROL_DIR || path.join(os.homedir(), '.vibetunnel');
+    this.controlDir = getControlDir();
     // Use api.sock instead of control.sock to avoid conflicts with Mac app
     this.controlSocketPath = path.join(this.controlDir, 'api.sock');
 

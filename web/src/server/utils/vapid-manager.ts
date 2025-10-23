@@ -1,8 +1,8 @@
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import webpush from 'web-push';
 import { createLogger } from './logger.js';
+import { resolveRootPath } from './vt-paths.js';
 
 const logger = createLogger('vapid-manager');
 
@@ -60,7 +60,7 @@ export class VapidManager {
   private readonly keysFilePath: string;
 
   constructor(vapidDir?: string) {
-    this.vapidDir = vapidDir || path.join(os.homedir(), '.vibetunnel/vapid');
+    this.vapidDir = vapidDir ? path.resolve(vapidDir) : resolveRootPath('vapid');
     this.keysFilePath = path.join(this.vapidDir, 'keys.json');
   }
 

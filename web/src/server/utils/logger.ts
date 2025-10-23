@@ -1,11 +1,10 @@
 import chalk from 'chalk';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
+import { getLogFilePath } from './vt-paths.js';
 
-// Log file path
-const LOG_DIR = path.join(os.homedir(), '.vibetunnel');
-let LOG_FILE = path.join(LOG_DIR, 'log.txt');
+let LOG_FILE = getLogFilePath();
+let usingCustomLogFile = false;
 
 /**
  * Set custom log file path
@@ -17,7 +16,8 @@ export function setLogFilePath(filePath: string): void {
     logFileHandle = null;
   }
 
-  LOG_FILE = filePath;
+  LOG_FILE = path.resolve(filePath);
+  usingCustomLogFile = true;
 
   // Ensure directory exists
   const dir = path.dirname(LOG_FILE);
@@ -104,9 +104,14 @@ export function initLogger(debug: boolean = false, verbosity?: VerbosityLevel): 
   }
 
   try {
+    if (!usingCustomLogFile) {
+      LOG_FILE = getLogFilePath();
+    }
+
+    const logDir = path.dirname(LOG_FILE);
     // Ensure log directory exists
-    if (!fs.existsSync(LOG_DIR)) {
-      fs.mkdirSync(LOG_DIR, { recursive: true });
+    if (!fs.existsSync(logDir)) {
+      fs.mkdirSync(logDir, { recursive: true });
     }
 
     // Delete old log file if it exists

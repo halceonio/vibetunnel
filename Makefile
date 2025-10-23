@@ -4,7 +4,7 @@
 WEB_DIR := web
 PNPM := pnpm
 
-.PHONY: help install typecheck lint test test-server test-client build build-ci build-npm dev dev-server dev-client clean format format-check run
+.PHONY: help install typecheck lint test test-server test-client build build-ci build-npm dev dev-server dev-client clean format format-check run install-server run-server
 
 help:
 	@echo "Available targets:"
@@ -24,6 +24,8 @@ help:
 	@echo "  make clean          # Remove build artifacts"
 	@echo "  make format         # Run formatter"
 	@echo "  make format-check   # Check formatting only"
+	@echo "  make install-server # Install server binary to /usr/local/bin"
+	@echo "  make run-server     # Run installed server binary (pass args)"
 
 install:
 	cd $(WEB_DIR) && $(PNPM) install
@@ -72,3 +74,20 @@ format:
 
 format-check:
 	cd $(WEB_DIR) && $(PNPM) run format:check
+
+install-server: install build-npm build
+# sudo install -m 0755 $(WEB_DIR)/native/vibetunnel /usr/local/bin/vibetunnel-server
+
+
+run-server:
+	NODE_ENV=production VIBETUNNEL_LOG_LEVEL=info $(WEB_DIR)/native/vibetunnel --bind 0.0.0.0 --port 4021 --hq --no-auth --config-dir=/shared/.config/vtunnel2
+
+run-server-cli:
+	NODE_ENV=production VIBETUNNEL_LOG_LEVEL=info $(WEB_DIR)/dist/vibetunnel-cli --bind 0.0.0.0 --port 4021 --hq --no-auth --config-dir=/shared/.config/vtunnel2
+
+
+cleanup-build:
+	rm -rf $(WEB_DIR)/native/vibetunnel
+
+rerun-server: cleanup-build install build
+	NODE_ENV=production VIBETUNNEL_LOG_LEVEL=info $(WEB_DIR)/dist/vibetunnel-cli --bind 0.0.0.0 --port 4021 --config-dir=/shared/.config/vtunnel2 --hq --no-auth 
