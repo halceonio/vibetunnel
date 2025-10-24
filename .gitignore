@@ -166,3 +166,5 @@ mac/build-test/
 /.grok
 /mac/info
 /info
+
+__scratch
