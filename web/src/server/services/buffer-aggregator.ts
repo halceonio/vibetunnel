@@ -1,8 +1,11 @@
 import chalk from 'chalk';
 import { WebSocket } from 'ws';
+import { parse as simdjsonParse } from 'simdjson';
+import type { CachedHistoryChunk, HistoryChunkPayload } from '../../shared/history-types.js';
 import { createLogger } from '../utils/logger.js';
 import type { RemoteRegistry } from './remote-registry.js';
 import type { BufferSnapshot, TerminalManager } from './terminal-manager.js';
+import type { HistoryStore } from './history-store.js';
 
 const logger = createLogger('buffer-aggregator');
 
@@ -10,6 +13,7 @@ interface BufferAggregatorConfig {
   terminalManager: TerminalManager;
   remoteRegistry: RemoteRegistry | null;
   isHQMode: boolean;
+  historyStore: HistoryStore | null;
 }
 
 interface RemoteWebSocketConnection {
@@ -75,9 +79,12 @@ export class BufferAggregator {
   private config: BufferAggregatorConfig;
   private remoteConnections: Map<string, RemoteWebSocketConnection> = new Map();
   private clientSubscriptions: Map<WebSocket, Map<string, () => void>> = new Map();
+  private historySubscriptions: Map<string, () => void> = new Map();
+  private historyStore: HistoryStore | null;
 
   constructor(config: BufferAggregatorConfig) {
     this.config = config;
+    this.historyStore = config.historyStore ?? null;
     logger.log(`BufferAggregator initialized (HQ mode: ${config.isHQMode})`);
   }
 
@@ -99,7 +106,7 @@ export class BufferAggregator {
     // Handle messages from client
     ws.on('message', async (message: Buffer) => {
       try {
-        const data = JSON.parse(message.toString());
+        const data = simdjsonParse(message.toString());
         await this.handleClientMessage(ws, data);
       } catch (error) {
         logger.error('Error handling client message:', error);
@@ -189,9 +196,101 @@ export class BufferAggregator {
           }
         }
       }
+
+      this.cleanupHistorySubscription(sessionId);
     } else if (data.type === 'ping') {
       clientWs.send(JSON.stringify({ type: 'pong', timestamp: Date.now() }));
     }
+  }
+
+  private ensureHistorySubscription(sessionId: string): void {
+    if (!this.historyStore) return;
+    if (this.historySubscriptions.has(sessionId)) return;
+
+    const unsubscribe = this.historyStore.subscribe(sessionId, (chunk) => {
+      this.broadcastHistoryChunk(chunk);
+    });
+
+    this.historySubscriptions.set(sessionId, unsubscribe);
+  }
+
+  private async sendCachedHistoryChunk(clientWs: WebSocket, sessionId: string): Promise<void> {
+    if (!this.historyStore) return;
+    try {
+      const chunk = await this.historyStore.getHistoryChunk(sessionId);
+      if (!chunk) return;
+      this.sendHistoryChunkToClient(clientWs, chunk);
+    } catch (error) {
+      logger.debug(
+        `Failed to send cached history chunk for session ${sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  private broadcastHistoryChunk(chunk: CachedHistoryChunk): void {
+    const messagePayload: HistoryChunkPayload = {
+      ...chunk.payload,
+      sessionId: chunk.sessionId,
+    };
+
+    const message = JSON.stringify(messagePayload);
+    for (const [clientWs, subscriptions] of this.clientSubscriptions) {
+      if (clientWs.readyState !== WebSocket.OPEN) continue;
+      if (!subscriptions.has(chunk.sessionId)) continue;
+
+      try {
+        clientWs.send(message);
+      } catch (error) {
+        logger.debug(
+          `Failed to send history chunk to client for session ${chunk.sessionId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
+      }
+    }
+  }
+
+  private sendHistoryChunkToClient(clientWs: WebSocket, chunk: CachedHistoryChunk): void {
+    if (clientWs.readyState !== WebSocket.OPEN) return;
+    const messagePayload: HistoryChunkPayload = {
+      ...chunk.payload,
+      sessionId: chunk.sessionId,
+    };
+    try {
+      clientWs.send(JSON.stringify(messagePayload));
+    } catch (error) {
+      logger.debug(
+        `Failed to send cached history chunk to client for session ${chunk.sessionId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+    }
+  }
+
+  private cleanupHistorySubscription(sessionId: string): void {
+    if (!this.historyStore) return;
+    if (this.getTotalSubscribers(sessionId) > 0) {
+      return;
+    }
+
+    const unsubscribe = this.historySubscriptions.get(sessionId);
+    if (unsubscribe) {
+      unsubscribe();
+      this.historySubscriptions.delete(sessionId);
+      logger.debug(`Removed history store subscription for session ${sessionId}`);
+    }
+  }
+
+  private getTotalSubscribers(sessionId: string): number {
+    let total = 0;
+    for (const subscriptions of this.clientSubscriptions.values()) {
+      if (subscriptions.has(sessionId)) {
+        total += 1;
+      }
+    }
+    return total;
   }
 
   /**
@@ -205,42 +304,45 @@ export class BufferAggregator {
       const unsubscribe = await this.config.terminalManager.subscribeToBufferChanges(
         sessionId,
         (sessionId: string, snapshot: BufferSnapshot) => {
-          try {
-            const buffer = this.config.terminalManager.encodeSnapshot(sessionId, snapshot);
-            const sessionIdBuffer = Buffer.from(sessionId, 'utf8');
-            const totalLength = 1 + 4 + sessionIdBuffer.length + buffer.length;
-            const fullBuffer = Buffer.allocUnsafe(totalLength);
+          this.config.terminalManager
+            .encodeSnapshot(sessionId, snapshot)
+            .then((buffer) => {
+              const sessionIdBuffer = Buffer.from(sessionId, 'utf8');
+              const totalLength = 1 + 4 + sessionIdBuffer.length + buffer.length;
+              const fullBuffer = Buffer.allocUnsafe(totalLength);
 
-            let offset = 0;
-            fullBuffer.writeUInt8(0xbf, offset); // Magic byte for binary message
-            offset += 1;
+              let offset = 0;
+              fullBuffer.writeUInt8(0xbf, offset);
+              offset += 1;
 
-            fullBuffer.writeUInt32LE(sessionIdBuffer.length, offset);
-            offset += 4;
+              fullBuffer.writeUInt32LE(sessionIdBuffer.length, offset);
+              offset += 4;
 
-            sessionIdBuffer.copy(fullBuffer, offset);
-            offset += sessionIdBuffer.length;
+              sessionIdBuffer.copy(fullBuffer, offset);
+              offset += sessionIdBuffer.length;
 
-            buffer.copy(fullBuffer, offset);
+              buffer.copy(fullBuffer, offset);
 
-            if (clientWs.readyState === WebSocket.OPEN) {
-              clientWs.send(fullBuffer);
-            } else {
-              logger.debug(`Skipping buffer update - client WebSocket not open`);
-            }
-          } catch (error) {
-            logger.error('Error encoding buffer update:', error);
-          }
+              if (clientWs.readyState === WebSocket.OPEN) {
+                clientWs.send(fullBuffer);
+              } else {
+                logger.debug(`Skipping buffer update - client WebSocket not open`);
+              }
+            })
+            .catch((error) => {
+              logger.error('Error encoding buffer update:', error);
+            });
         }
       );
 
       subscriptions.set(sessionId, unsubscribe);
       logger.debug(`Created subscription for local session ${sessionId}`);
+      this.ensureHistorySubscription(sessionId);
 
       // Send initial buffer
       logger.debug(`Sending initial buffer for session ${sessionId}`);
       const initialSnapshot = await this.config.terminalManager.getBufferSnapshot(sessionId);
-      const buffer = this.config.terminalManager.encodeSnapshot(sessionId, initialSnapshot);
+      const buffer = await this.config.terminalManager.encodeSnapshot(sessionId, initialSnapshot);
 
       const sessionIdBuffer = Buffer.from(sessionId, 'utf8');
       const totalLength = 1 + 4 + sessionIdBuffer.length + buffer.length;
@@ -264,6 +366,8 @@ export class BufferAggregator {
       } else {
         logger.warn(`Cannot send initial buffer - client WebSocket not open`);
       }
+
+      await this.sendCachedHistoryChunk(clientWs, sessionId);
     } catch (error) {
       logger.error(`Error subscribing to local session ${sessionId}:`, error);
       clientWs.send(JSON.stringify({ type: 'error', message: 'Failed to subscribe to session' }));
@@ -404,7 +508,7 @@ export class BufferAggregator {
     } else {
       // JSON message
       try {
-        const message = JSON.parse(data.toString());
+        const message = simdjsonParse(data.toString());
         logger.debug(`Remote ${remoteId} message:`, message.type);
       } catch (error) {
         logger.error(`Failed to parse remote message:`, error);
@@ -449,6 +553,7 @@ export class BufferAggregator {
       for (const [sessionId, unsubscribe] of subscriptions) {
         logger.debug(`Cleaning up subscription for session ${sessionId}`);
         unsubscribe();
+        this.cleanupHistorySubscription(sessionId);
       }
       subscriptions.clear();
       logger.debug(`Cleaned up ${subscriptionCount} subscriptions`);

@@ -10,6 +10,7 @@
  * points where old terminal content can be safely discarded.
  */
 
+import { parse as simdjsonParse } from 'simdjson';
 import { createLogger } from './logger.js';
 
 const logger = createLogger('PruningDetector');
@@ -140,7 +141,7 @@ export function checkAsciinemaEventForPruning(line: string): {
   eventType: string;
 } | null {
   try {
-    const parsed = JSON.parse(line);
+    const parsed = simdjsonParse(line);
 
     // Check if it's a valid event array
     if (!Array.isArray(parsed) || parsed.length < 3) {
@@ -191,7 +192,7 @@ export function calculatePruningPositionInFile(
   // We need to find where within the line the sequence ends
 
   // Parse the event to get the data
-  const event = JSON.parse(eventLine);
+  const event = simdjsonParse(eventLine);
   const data = event[2];
 
   // Find where the data portion starts in the JSON string

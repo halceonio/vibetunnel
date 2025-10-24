@@ -1,6 +1,7 @@
 import chalk from 'chalk';
 import type { Response } from 'express';
 import * as fs from 'fs';
+import type { CachedHistoryChunk, HistoryChunkPayload } from '../../shared/history-types.js';
 import type { SessionManager } from '../pty/session-manager.js';
 import type { AsciinemaHeader } from '../pty/types.js';
 import { createLogger } from '../utils/logger.js';
@@ -11,6 +12,10 @@ import {
   logPruningDetection,
 } from '../utils/pruning-detector.js';
 import { gitWatcher } from './git-watcher.js';
+import type { HistoryStore } from './history-store.js';
+import { getWorkerPool } from '../workers/pool.js';
+import type { HistoryChunkTaskPayload, HistoryChunkTaskResult } from '../workers/types.js';
+import { parse as simdjsonParse } from 'simdjson';
 
 const logger = createLogger('stream-watcher');
 
@@ -68,9 +73,12 @@ interface WatcherInfo {
 export class StreamWatcher {
   private activeWatchers: Map<string, WatcherInfo> = new Map();
   private sessionManager: SessionManager;
+  private historyStore: HistoryStore | null;
+  private workerPool = getWorkerPool();
 
-  constructor(sessionManager: SessionManager) {
+  constructor(sessionManager: SessionManager, historyStore: HistoryStore | null = null) {
     this.sessionManager = sessionManager;
+    this.historyStore = historyStore;
     // Clean up notification listeners on exit
     process.on('beforeExit', () => {
       this.cleanup();
@@ -124,7 +132,7 @@ export class StreamWatcher {
     if (!line.trim()) return null;
 
     try {
-      const parsed = JSON.parse(line);
+          const parsed = simdjsonParse(line);
 
       // Check if it's a header
       if (parsed.version && parsed.width && parsed.height) {
@@ -214,7 +222,9 @@ export class StreamWatcher {
       this.activeWatchers.set(sessionId, watcherInfo);
 
       // Send existing content first
-      this.sendExistingContent(sessionId, streamPath, client, options);
+      void this.sendExistingContent(sessionId, streamPath, client, options).catch((error) => {
+        logger.error(`Failed to send existing content for session ${sessionId}:`, error);
+      });
 
       // Get current file size and stats
       if (fs.existsSync(streamPath)) {
@@ -234,7 +244,9 @@ export class StreamWatcher {
       this.startGitWatching(sessionId, response);
     } else {
       // Send existing content to new client
-      this.sendExistingContent(sessionId, streamPath, client, options);
+      void this.sendExistingContent(sessionId, streamPath, client, options).catch((error) => {
+        logger.error(`Failed to send existing content for session ${sessionId}:`, error);
+      });
 
       // Add this client to git watcher
       gitWatcher.addClient(sessionId, response);
@@ -294,12 +306,12 @@ export class StreamWatcher {
   /**
    * Send existing content to a client
    */
-  private sendExistingContent(
+  private async sendExistingContent(
     sessionId: string,
     streamPath: string,
     client: StreamClient,
     options: StreamClientOptions
-  ): void {
+  ): Promise<void> {
     try {
       const tailLinesRequested = options?.initialTailLines ?? 0;
       const initialTailLines = Number.isFinite(tailLinesRequested)
@@ -345,7 +357,7 @@ export class StreamWatcher {
 
         const idx = data.indexOf('\n');
         if (idx !== -1) {
-          header = JSON.parse(data.slice(0, idx));
+          header = simdjsonParse(data.slice(0, idx));
         }
       } catch (e) {
         logger.debug(`failed to read asciinema header for session ${sessionId}: ${e}`);
@@ -393,7 +405,7 @@ export class StreamWatcher {
 
           if (line.trim()) {
             try {
-              const parsed = JSON.parse(line);
+              const parsed = simdjsonParse(line);
               if (parsed.version && parsed.width && parsed.height) {
                 header = parsed;
               } else if (Array.isArray(parsed)) {
@@ -437,11 +449,11 @@ export class StreamWatcher {
         }
       });
 
-      analysisStream.on('end', () => {
+      analysisStream.on('end', async () => {
         // Process any remaining line in analysis
         if (lineBuffer.trim()) {
           try {
-            const parsed = JSON.parse(lineBuffer);
+            const parsed = simdjsonParse(lineBuffer);
             const lineStartOffset = fileOffset;
             fileOffset += Buffer.byteLength(lineBuffer, 'utf8');
             if (Array.isArray(parsed)) {
@@ -528,51 +540,42 @@ export class StreamWatcher {
           sendStartIndex = Math.max(sendStartIndex, baseStartIndex);
           const hasMoreHistory = sendStartIndex > baseStartIndex;
 
-          const chunkEvents: AsciinemaEvent[] = [];
-          let chunkOutputEvents = 0;
           let exitEventToSend: AsciinemaExitEvent | null = null;
 
-          for (let i = sendStartIndex; i < events.length; i++) {
-            const event = events[i];
-
-            if (isExitEvent(event)) {
-              exitEventToSend = event;
-              continue;
-            }
-
-            if (isOutputEvent(event) || isResizeEvent(event)) {
-              if (isOutputEvent(event)) {
-                chunkOutputEvents++;
-              }
-
-              const normalizedEvent: AsciinemaEvent = [0, event[1], event[2]];
-              chunkEvents.push(normalizedEvent);
-            }
-          }
-
-          const payload = {
-            type: 'history-chunk',
-            mode: 'tail',
-            hasMore: hasMoreHistory,
-            totalEvents: Math.max(events.length - baseStartIndex, 0),
-            totalOutputEvents,
-            chunkEventCount: chunkEvents.length,
-            chunkOutputEvents,
-            chunkStartOffset: eventOffsets[sendStartIndex] ?? startOffset,
-            previousOffset:
-              hasMoreHistory && sendStartIndex > 0 ? eventOffsets[sendStartIndex - 1] ?? null : null,
-            nextOffset: fileOffset,
+          const workerPayload: HistoryChunkTaskPayload = {
+            sessionId,
+            events,
+            eventOffsets,
+            baseStartIndex,
+            sendStartIndex,
+            startOffset,
+            fileOffset,
             initialTailLines,
-            events: chunkEvents,
+            hasMoreHistory,
+            totalEvents: events.length,
+            totalOutputEvents,
           };
 
-          client.response.write(`data: ${JSON.stringify(payload)}\n\n`);
-          if (client.response.flush) {
-            try {
-              client.response.flush();
-            } catch (flushError) {
-              logger.debug(`flush failed for history chunk: ${flushError}`);
+          const chunkResult = await this.computeHistoryChunk(sessionId, workerPayload, events);
+
+          if (chunkResult.payload) {
+            const payload = chunkResult.payload;
+            payload.sessionId = sessionId;
+
+            client.response.write(`data: ${JSON.stringify(payload)}\n\n`);
+            if (client.response.flush) {
+              try {
+                client.response.flush();
+              } catch (flushError) {
+                logger.debug(`flush failed for history chunk: ${flushError}`);
+              }
             }
+
+            this.cacheHistoryChunk(sessionId, payload);
+          }
+
+          if (chunkResult.exitEvent) {
+            exitEventToSend = chunkResult.exitEvent as AsciinemaExitEvent;
           }
 
           if (exitEventToSend) {
@@ -749,6 +752,115 @@ export class StreamWatcher {
     } catch (error) {
       logger.error(`Failed to start git watching for session ${sessionId}:`, error);
     }
+  }
+
+  private async computeHistoryChunk(
+    sessionId: string,
+    payload: HistoryChunkTaskPayload,
+    events: AsciinemaEvent[]
+  ): Promise<HistoryChunkTaskResult> {
+    try {
+      const result = await this.workerPool.runTask<HistoryChunkTaskResult>('buildHistoryChunk', payload);
+      if (result) {
+        return result;
+      }
+    } catch (error) {
+      logger.debug(
+        `History chunk worker failed for session ${sessionId}: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+
+    return this.buildHistoryChunkSync(payload, events);
+  }
+
+  private buildHistoryChunkSync(
+    payload: HistoryChunkTaskPayload,
+    events: AsciinemaEvent[]
+  ): HistoryChunkTaskResult {
+    const {
+      sessionId,
+      eventOffsets,
+      baseStartIndex,
+      sendStartIndex,
+      startOffset,
+      fileOffset,
+      initialTailLines,
+      hasMoreHistory,
+      totalEvents,
+      totalOutputEvents,
+    } = payload;
+
+    const chunkEvents: AsciinemaEvent[] = [];
+    let chunkOutputEvents = 0;
+    let exitEvent: AsciinemaExitEvent | null = null;
+
+    for (let i = sendStartIndex; i < events.length; i++) {
+      const event = events[i];
+
+      if (isExitEvent(event)) {
+        exitEvent = event;
+        continue;
+      }
+
+      if (isOutputEvent(event) || isResizeEvent(event)) {
+        if (isOutputEvent(event)) {
+          chunkOutputEvents++;
+        }
+
+        const normalizedEvent: AsciinemaEvent = [0, event[1], event[2]];
+        chunkEvents.push(normalizedEvent);
+      }
+    }
+
+    if (chunkEvents.length === 0) {
+      return {
+        payload: null,
+        chunkOutputEvents,
+        exitEvent,
+      };
+    }
+
+    const chunkPayload: HistoryChunkPayload = {
+      type: 'history-chunk',
+      sessionId,
+      mode: 'tail',
+      hasMore: hasMoreHistory,
+      totalEvents: Math.max(totalEvents - baseStartIndex, 0),
+      totalOutputEvents,
+      chunkEventCount: chunkEvents.length,
+      chunkOutputEvents,
+      chunkStartOffset: eventOffsets[sendStartIndex] ?? startOffset,
+      previousOffset:
+        hasMoreHistory && sendStartIndex > 0 ? eventOffsets[sendStartIndex - 1] ?? null : null,
+      nextOffset: fileOffset,
+      initialTailLines,
+      events: chunkEvents,
+    };
+
+    return {
+      payload: chunkPayload,
+      chunkOutputEvents,
+      exitEvent,
+    };
+  }
+
+  private cacheHistoryChunk(sessionId: string, payload: HistoryChunkPayload): void {
+    if (!this.historyStore) return;
+    const record: CachedHistoryChunk = {
+      sessionId,
+      payload,
+      updatedAt: Date.now(),
+    };
+
+    this.historyStore
+      .setHistoryChunk(record)
+      .catch((error) =>
+        logger.debug(
+          `Failed to cache history chunk for session ${sessionId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        )
+      );
   }
 
   /**

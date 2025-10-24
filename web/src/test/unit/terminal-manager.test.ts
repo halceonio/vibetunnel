@@ -233,7 +233,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
   });
 
   describe('Binary Encoding', () => {
-    it('should encode snapshot to binary format', () => {
+    it('should encode snapshot to binary format', async () => {
       const session: SessionEntry = {
         id: 'binary-test',
         cmdline: ['test'],
@@ -257,7 +257,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       if (!snapshot) {
         throw new Error('Snapshot not found');
       }
-      const encoded = terminalManager.encodeSnapshot('binary-test', snapshot);
+      const encoded = await terminalManager.encodeSnapshot('binary-test', snapshot);
       expect(encoded).toBeInstanceOf(Uint8Array);
 
       // Verify header
@@ -268,7 +268,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       expect(view.getUint32(8)).toBe(24); // Rows
     });
 
-    it('should encode empty lines efficiently', () => {
+    it('should encode empty lines efficiently', async () => {
       const session: SessionEntry = {
         id: 'empty-test',
         cmdline: ['test'],
@@ -290,7 +290,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       if (!snapshot) {
         throw new Error('Snapshot not found');
       }
-      const encoded = terminalManager.encodeSnapshot('empty-test', snapshot);
+      const encoded = await terminalManager.encodeSnapshot('empty-test', snapshot);
 
       // Should use 0xFE markers for empty lines
       let emptyLineCount = 0;
@@ -303,7 +303,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       expect(emptyLineCount).toBe(10); // All lines should be empty
     });
 
-    it('should encode styled text', () => {
+    it('should encode styled text', async () => {
       const session: SessionEntry = {
         id: 'style-test',
         cmdline: ['test'],
@@ -327,7 +327,7 @@ describe.skip('TerminalManager - OUTDATED TESTS', () => {
       if (!snapshot) {
         throw new Error('Snapshot not found');
       }
-      const encoded = terminalManager.encodeSnapshot('style-test', snapshot);
+      const encoded = await terminalManager.encodeSnapshot('style-test', snapshot);
 
       // Should contain styled cells
       expect(encoded.length).toBeGreaterThan(32); // Header + content

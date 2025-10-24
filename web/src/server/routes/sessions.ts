@@ -980,7 +980,7 @@ export function createSessionRoutes(config: SessionRoutesConfig): Router {
       }
 
       // Encode as binary buffer
-      const buffer = terminalManager.encodeSnapshot(sessionId, snapshot);
+      const buffer = await terminalManager.encodeSnapshot(sessionId, snapshot);
 
       logger.debug(
         `sending buffer for session ${sessionId}: ${buffer.length} bytes, ` +

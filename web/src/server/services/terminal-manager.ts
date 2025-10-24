@@ -4,6 +4,9 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ErrorDeduplicator, formatErrorSummary } from '../utils/error-deduplicator.js';
 import { createLogger } from '../utils/logger.js';
+import { parse as simdjsonParse } from 'simdjson';
+import { getWorkerPool } from '../workers/pool.js';
+import type { EncodeSnapshotTaskResult } from '../workers/types.js';
 
 const logger = createLogger('terminal-manager');
 
@@ -163,6 +166,7 @@ export class TerminalManager {
   });
   private originalConsoleWarn: typeof console.warn;
   private flowControlTimer?: NodeJS.Timeout;
+  private workerPool = getWorkerPool();
 
   constructor(controlDir: string) {
     this.controlDir = controlDir;
@@ -503,7 +507,7 @@ export class TerminalManager {
    */
   private processStreamLine(sessionId: string, sessionTerminal: SessionTerminal, line: string) {
     try {
-      const data = JSON.parse(line);
+      const data = simdjsonParse(line);
 
       // Handle asciinema header
       if (data.version && data.width && data.height) {
@@ -755,11 +759,55 @@ export class TerminalManager {
    * ws.send(packet);
    * ```
    */
-  encodeSnapshot(sessionId: string, snapshot: BufferSnapshot): Buffer {
+  async encodeSnapshot(sessionId: string, snapshot: BufferSnapshot): Promise<Buffer> {
     const startTime = Date.now();
-    const { cols, rows, viewportY, cursorX, cursorY, cells } = snapshot;
     const sessionTerminal = this.terminals.get(sessionId);
-    const previousSnapshot = sessionTerminal?.lastSnapshot;
+    const previousSnapshot = sessionTerminal?.lastSnapshot ?? null;
+
+    let buffer: Buffer;
+    let usedDiff = false;
+
+    try {
+      const result = await this.workerPool.runTask<EncodeSnapshotTaskResult>('encodeSnapshot', {
+        snapshot,
+        previousSnapshot,
+      });
+
+      buffer = Buffer.from(
+        new Uint8Array(result.buffer, result.byteOffset, result.byteLength)
+      );
+      usedDiff = result.usedDiff;
+    } catch (error) {
+      logger.debug(
+        `Snapshot encode worker failed for session ${sessionId}, falling back: ${
+          error instanceof Error ? error.message : String(error)
+        }`
+      );
+      const fallback = this.encodeSnapshotSync(snapshot, previousSnapshot);
+      buffer = fallback.buffer;
+      usedDiff = fallback.usedDiff;
+    }
+
+    if (sessionTerminal) {
+      sessionTerminal.lastSnapshot = cloneSnapshot(snapshot);
+      sessionTerminal.lastSnapshotSignature = computeSnapshotSignature(snapshot);
+    }
+
+    const duration = Date.now() - startTime;
+    if (duration > 5) {
+      logger.debug(
+        `Encoded snapshot${usedDiff ? ' (diff)' : ''}: ${buffer.length} bytes in ${duration}ms (${snapshot.rows} rows)`
+      );
+    }
+
+    return buffer;
+  }
+
+  private encodeSnapshotSync(
+    snapshot: BufferSnapshot,
+    previousSnapshot: BufferSnapshot | null
+  ): { buffer: Buffer; usedDiff: boolean } {
+    const { cols, rows, viewportY, cursorX, cursorY, cells } = snapshot;
 
     let useDiff = false;
     let changedRows: Array<{ index: number; row: BufferCell[] }> = [];
@@ -779,7 +827,6 @@ export class TerminalManager {
         }
       }
 
-      // If everything changed, no benefit to diff mode
       if (changedRows.length > 0 && changedRows.length < cells.length) {
         useDiff = true;
       } else {
@@ -792,16 +839,14 @@ export class TerminalManager {
     const flags = useDiff ? 0x01 : 0x00;
 
     if (useDiff && changedRows.length > 0) {
-      // Pre-calculate size: header + count + per-row (index + row data)
-      let dataSize = 32 + 2; // Header + changed rows count
+      let dataSize = 32 + 2;
       for (const { row } of changedRows) {
-        dataSize += 2; // Row index
+        dataSize += 2;
         dataSize += this.calculateRowSize(row);
       }
 
       buffer = Buffer.allocUnsafe(dataSize);
 
-      // Header
       buffer.writeUInt16LE(0x5654, offset);
       offset += 2;
       buffer.writeUInt8(0x01, offset++);
@@ -828,7 +873,6 @@ export class TerminalManager {
         offset = this.encodeRow(buffer, offset, row);
       }
     } else {
-      // Full snapshot path
       let dataSize = 32;
       for (const rowCells of cells) {
         dataSize += this.calculateRowSize(rowCells);
@@ -858,21 +902,7 @@ export class TerminalManager {
       }
     }
 
-    const result = buffer.subarray(0, offset);
-
-    if (sessionTerminal) {
-      sessionTerminal.lastSnapshot = cloneSnapshot(snapshot);
-      sessionTerminal.lastSnapshotSignature = computeSnapshotSignature(snapshot);
-    }
-
-    const duration = Date.now() - startTime;
-    if (duration > 5) {
-      logger.debug(
-        `Encoded snapshot${useDiff ? ' (diff)' : ''}: ${result.length} bytes in ${duration}ms (${rows} rows)`
-      );
-    }
-
-    return result;
+    return { buffer: buffer.subarray(0, offset), usedDiff: useDiff };
   }
 
   /**

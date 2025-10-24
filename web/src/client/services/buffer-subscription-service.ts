@@ -56,6 +56,7 @@
  * @see web/src/client/components/vibe-terminal-binary.ts for UI integration
  */
 
+import type { HistoryChunkPayload } from '../../shared/history-types.js';
 import { createLogger } from '../utils/logger.js';
 import type { BufferSnapshot } from '../utils/terminal-renderer.js';
 import { authClient } from './auth-client.js';
@@ -86,22 +87,6 @@ type BufferUpdateHandler = (snapshot: BufferSnapshot) => void;
 
 // Magic byte for binary messages - identifies buffer update packets
 const BUFFER_MAGIC_BYTE = 0xbf;
-
-export interface HistoryChunkPayload {
-  type: 'history-chunk';
-  sessionId?: string;
-  hasMore?: boolean;
-  totalEvents?: number;
-  totalOutputEvents?: number;
-  chunkEventCount?: number;
-  chunkOutputEvents?: number;
-  chunkStartOffset?: number | null;
-  previousOffset?: number | null;
-  nextOffset?: number | null;
-  initialTailLines?: number | null;
-  mode?: string;
-  events?: unknown[];
-}
 
 type HistoryChunkHandler = (payload: HistoryChunkPayload) => void;
 

@@ -38,6 +38,8 @@ import { AuthService } from './services/auth-service.js';
 import { BufferAggregator } from './services/buffer-aggregator.js';
 import { ConfigService } from './services/config-service.js';
 import { ControlDirWatcher } from './services/control-dir-watcher.js';
+import { createHistoryStore } from './services/history-store.js';
+import type { HistoryStore } from './services/history-store.js';
 import { HQClient } from './services/hq-client.js';
 import { mdnsService } from './services/mdns-service.js';
 import { PushNotificationService } from './services/push-notification-service.js';
@@ -409,6 +411,7 @@ interface AppInstance {
   bufferAggregator: BufferAggregator | null;
   activityMonitor: ActivityMonitor;
   pushNotificationService: PushNotificationService | null;
+  historyStore: HistoryStore | null;
 }
 
 // Track if app has been created
@@ -527,12 +530,24 @@ export async function createApp(): Promise<AppInstance> {
     );
   }
 
+  let historyStore: HistoryStore | null = null;
+  try {
+    historyStore = await createHistoryStore();
+  } catch (error) {
+    logger.warn(
+      `History store initialization failed, continuing without shared cache: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+    historyStore = null;
+  }
+
   // Initialize Terminal Manager for server-side terminal state
   const terminalManager = new TerminalManager(CONTROL_DIR);
   logger.debug('Initialized terminal manager');
 
   // Initialize stream watcher for file-based streaming
-  const streamWatcher = new StreamWatcher(sessionManager);
+  const streamWatcher = new StreamWatcher(sessionManager, historyStore);
   logger.debug('Initialized stream watcher');
 
   // Initialize session monitor with PTY manager
@@ -720,6 +735,7 @@ export async function createApp(): Promise<AppInstance> {
     terminalManager,
     remoteRegistry,
     isHQMode: config.isHQMode,
+    historyStore,
   });
   logger.debug('Initialized buffer aggregator');
 
@@ -1535,6 +1551,7 @@ export async function createApp(): Promise<AppInstance> {
     bufferAggregator,
     activityMonitor,
     pushNotificationService,
+    historyStore,
   };
 }
 
@@ -1571,6 +1588,7 @@ export async function startVibeTunnelServer() {
     activityMonitor,
     config,
     configService,
+    historyStore,
   } = appInstance;
 
   // Update debug mode based on config or environment variable
@@ -1668,6 +1686,11 @@ export async function startVibeTunnelServer() {
       if (remoteRegistry) {
         logger.debug('Destroying remote registry');
         remoteRegistry.destroy();
+      }
+
+      if (historyStore) {
+        await historyStore.close();
+        logger.debug('Closed history store');
       }
 
       server.close(() => {
