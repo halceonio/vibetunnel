@@ -1,6 +1,7 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
+const crypto = require('crypto');
 
 console.log('Starting CI build process...');
 
@@ -21,6 +22,7 @@ console.log('Bundling client JavaScript...');
 execSync('esbuild src/client/app-entry.ts --bundle --outfile=public/bundle/client-bundle.js --format=esm --minify --define:process.env.NODE_ENV=\'"production"\'', { stdio: 'inherit' });
 execSync('esbuild src/client/test-entry.ts --bundle --outfile=public/bundle/test.js --format=esm --minify --define:process.env.NODE_ENV=\'"production"\'', { stdio: 'inherit' });
 execSync('esbuild src/client/sw.ts --bundle --outfile=public/sw.js --format=iife --minify --define:process.env.NODE_ENV=\'"production"\'', { stdio: 'inherit' });
+applyClientBundleVersion();
 
 // Build server TypeScript
 console.log('Building server...');
@@ -50,3 +52,30 @@ console.log('Building native executable for CI...');
 execSync('node build-native.js', { stdio: 'inherit' });
 
 console.log('CI build completed successfully!');
+
+function getFileHash(filePath) {
+  const fileBuffer = fs.readFileSync(filePath);
+  return crypto.createHash('sha256').update(fileBuffer).digest('hex').slice(0, 8);
+}
+
+function applyClientBundleVersion() {
+  const bundlePath = path.join('public', 'bundle', 'client-bundle.js');
+  if (!fs.existsSync(bundlePath)) {
+    console.warn('client-bundle.js not found, skipping cache busting');
+    return;
+  }
+
+  const hash = getFileHash(bundlePath);
+  const versionedRef = `/bundle/client-bundle.js?v=${hash}`;
+  const pattern = /\/bundle\/client-bundle\.js(\?v=[a-z0-9]+)?/g;
+  const filesToPatch = [path.join('public', 'index.html'), path.join('public', 'logs.html')];
+
+  filesToPatch.forEach((file) => {
+    if (!fs.existsSync(file)) return;
+    const original = fs.readFileSync(file, 'utf8');
+    const updated = original.replace(pattern, versionedRef);
+    fs.writeFileSync(file, updated);
+  });
+
+  console.log(`Applied cache-busting version query (?v=${hash}) to client bundle references`);
+}

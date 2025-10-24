@@ -2,6 +2,7 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const esbuild = require('esbuild');
+const crypto = require('crypto');
 const { prodOptions } = require('./esbuild-config.js');
 const { nodePtyPlugin } = require('./node-pty-plugin.js');
 
@@ -52,6 +53,9 @@ async function build() {
     });
 
     console.log('Client bundles built successfully');
+
+    // Apply cache-busting query params to bundles
+    applyClientBundleVersion();
   } catch (error) {
     console.error('Build failed:', error);
     process.exit(1);
@@ -145,6 +149,33 @@ async function build() {
   }
 
   console.log('Build completed successfully!');
+}
+
+function getFileHash(filePath) {
+  const fileBuffer = fs.readFileSync(filePath);
+  return crypto.createHash('sha256').update(fileBuffer).digest('hex').slice(0, 8);
+}
+
+function applyClientBundleVersion() {
+  const bundlePath = path.join('public', 'bundle', 'client-bundle.js');
+  if (!fs.existsSync(bundlePath)) {
+    console.warn('client-bundle.js not found, skipping cache busting');
+    return;
+  }
+
+  const hash = getFileHash(bundlePath);
+  const versionedRef = `/bundle/client-bundle.js?v=${hash}`;
+  const pattern = /\/bundle\/client-bundle\.js(\?v=[a-z0-9]+)?/g;
+  const filesToPatch = [path.join('public', 'index.html'), path.join('public', 'logs.html')];
+
+  filesToPatch.forEach((file) => {
+    if (!fs.existsSync(file)) return;
+    const original = fs.readFileSync(file, 'utf8');
+    const updated = original.replace(pattern, versionedRef);
+    fs.writeFileSync(file, updated);
+  });
+
+  console.log(`Applied cache-busting version query (?v=${hash}) to client bundle references`);
 }
 
 // Run the build

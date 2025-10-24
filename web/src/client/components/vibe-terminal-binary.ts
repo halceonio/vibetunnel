@@ -36,6 +36,7 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
   @property({ type: Boolean }) fitHorizontally = false;
   @property({ type: Number }) maxCols = 0; // 0 means no limit
   @property({ type: Boolean }) disableClick = false; // Disable click handling (for mobile direct keyboard)
+  @property({ type: Boolean }) useDirectKeyboard = true;
   @property({ type: Boolean }) hideScrollButton = false; // Hide scroll-to-bottom button
   @property({ type: Number }) initialCols = 0; // Initial terminal width from session creation
   @property({ type: Number }) initialRows = 0; // Initial terminal height from session creation
@@ -59,6 +60,9 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
   private preferencesManager = TerminalPreferencesManager.getInstance();
   private isScrolledToBottom = true;
   private hiddenInput?: HTMLInputElement;
+  private directKeydownHandler?: (event: KeyboardEvent) => void;
+  private directFocusHandler?: () => void;
+  private inputMode: 'none' | 'hidden' | 'direct' = 'none';
   private historyChunkUnsubscribe: (() => void) | null = null;
 
   connectedCallback() {
@@ -71,6 +75,8 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     // Initialize dimensions
     this.currentCols = this.cols;
     this.currentRows = this.rows;
+
+    this.addEventListener('content-changed', this.handleContentChanged);
 
     // Listen for font size changes
     window.addEventListener('terminal-font-size-changed', this.handleFontSizeChange);
@@ -85,15 +91,9 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     // Clean up event listeners
     window.removeEventListener('terminal-font-size-changed', this.handleFontSizeChange);
     window.removeEventListener('terminal-theme-changed', this.handleThemeChange);
+    this.removeEventListener('content-changed', this.handleContentChanged);
     this.teardownHistoryChunkSubscription();
-
-    // Clean up hidden input
-    if (this.hiddenInput) {
-      this.hiddenInput.removeEventListener('input', this.handleInput);
-      this.hiddenInput.removeEventListener('keydown', this.handleKeydown);
-      this.hiddenInput.remove();
-      this.hiddenInput = undefined;
-    }
+    this.teardownInputHandling();
 
     // Clean up resize observer
     if (this.terminalResizeObserver) {
@@ -107,8 +107,8 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     super.firstUpdated();
 
     // Initialize input handling
-    if (this.terminalContainer && !this.disableClick) {
-      this.setupInputHandling();
+    if (this.terminalContainer) {
+      this.initializeInputHandling();
     }
 
     this.setupHistoryChunkSubscription();
@@ -143,6 +143,13 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
 
     if (changedProperties.has('sessionId')) {
       this.setupHistoryChunkSubscription();
+    }
+
+    if (
+      (changedProperties.has('useDirectKeyboard') || changedProperties.has('disableClick')) &&
+      this.terminalContainer
+    ) {
+      this.initializeInputHandling();
     }
   }
 
@@ -288,6 +295,13 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     );
   };
 
+  private handleContentChanged = () => {
+    if (this.historyPreviewLines) {
+      this.historyPreviewLines = null;
+      this.historyPreviewMode = null;
+    }
+  };
+
   private applyHistoryPreview(payload: HistoryChunkPayload) {
     const lines = this.convertHistoryChunkToLines(payload?.events);
     if (lines.length === 0) {
@@ -420,7 +434,45 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     this.theme = customEvent.detail;
   };
 
-  private setupInputHandling() {
+  private initializeInputHandling() {
+    this.teardownInputHandling();
+
+    if (this.shouldUseDirectKeyboard()) {
+      this.setupDirectKeyboardInput();
+      this.inputMode = 'direct';
+    } else if (!this.disableClick) {
+      this.setupHiddenInputHandling();
+      this.inputMode = 'hidden';
+    } else {
+      this.inputMode = 'none';
+    }
+  }
+
+  private teardownInputHandling() {
+    if (this.inputMode === 'hidden') {
+      this.teardownHiddenInputHandling();
+    }
+    if (this.inputMode === 'direct') {
+      this.teardownDirectKeyboardInput();
+    }
+    this.inputMode = 'none';
+  }
+
+  private shouldUseDirectKeyboard(): boolean {
+    if (!this.useDirectKeyboard) return false;
+    if (this.isTouchEnvironment()) return false;
+    if (this.disableClick) return false;
+    return true;
+  }
+
+  private isTouchEnvironment(): boolean {
+    if (typeof window === 'undefined' || typeof navigator === 'undefined') {
+      return false;
+    }
+    return 'ontouchstart' in window || navigator.maxTouchPoints > 0;
+  }
+
+  private setupHiddenInputHandling() {
     // Create hidden input for capturing keyboard input
     this.hiddenInput = document.createElement('input');
     this.hiddenInput.type = 'text';
@@ -441,11 +493,69 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     this.hiddenInput.addEventListener('keydown', this.handleKeydown);
 
     // Focus on click
+    this.hiddenInput.addEventListener('click', this.preventHiddenInputClick);
+
     this.terminalContainer?.addEventListener('click', () => {
       if (!this.disableClick) {
         this.focus();
       }
     });
+  }
+
+  private teardownHiddenInputHandling() {
+    if (!this.hiddenInput) return;
+
+    this.hiddenInput.removeEventListener('input', this.handleInput);
+    this.hiddenInput.removeEventListener('keydown', this.handleKeydown);
+    this.hiddenInput.removeEventListener('click', this.preventHiddenInputClick);
+    this.hiddenInput.remove();
+    this.hiddenInput = undefined;
+  }
+
+  private setupDirectKeyboardInput() {
+    if (!this.terminalContainer) return;
+
+    this.directKeydownHandler = (event: KeyboardEvent) => {
+      if (this.handleKeydown(event)) {
+        return;
+      }
+
+      if (event.defaultPrevented) {
+        return;
+      }
+
+      if (event.metaKey || event.ctrlKey || event.altKey) {
+        return;
+      }
+
+      if (event.key.length !== 1) {
+        return;
+      }
+
+      this.sendInputText(event.key);
+      consumeEvent(event);
+    };
+
+    this.directFocusHandler = () => {
+      this.terminalContainer?.focus();
+    };
+
+    this.terminalContainer.setAttribute('tabindex', '0');
+    this.terminalContainer.addEventListener('keydown', this.directKeydownHandler);
+    this.terminalContainer.addEventListener('click', this.directFocusHandler);
+  }
+
+  private teardownDirectKeyboardInput() {
+    if (!this.terminalContainer) return;
+    if (this.directKeydownHandler) {
+      this.terminalContainer.removeEventListener('keydown', this.directKeydownHandler);
+      this.directKeydownHandler = undefined;
+    }
+    if (this.directFocusHandler) {
+      this.terminalContainer.removeEventListener('click', this.directFocusHandler);
+      this.directFocusHandler = undefined;
+    }
+    this.terminalContainer.removeAttribute('tabindex');
   }
 
   private handleInput = (event: Event) => {
@@ -494,7 +604,10 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     if (specialKey) {
       consumeEvent(event);
       this.sendInputText(specialKey);
+      return true;
     }
+
+    return false;
   };
 
   private async sendInputText(text: string) {

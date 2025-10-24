@@ -34,6 +34,7 @@ export class TerminalRenderer extends LitElement {
   @property({ type: String }) terminalTheme: TerminalThemeId = 'auto';
   @property({ type: Boolean }) disableClick = false;
   @property({ type: Boolean }) hideScrollButton = false;
+  @property({ type: Boolean }) useDirectKeyboard = true;
 
   // Event handlers passed as properties
   @property({ type: Object }) onTerminalClick?: (e: Event) => void;
@@ -62,6 +63,7 @@ export class TerminalRenderer extends LitElement {
           .initialCols=${this.session.initialCols || 0}
           .initialRows=${this.session.initialRows || 0}
           .disableClick=${this.disableClick}
+          .useDirectKeyboard=${this.useDirectKeyboard}
           .hideScrollButton=${this.hideScrollButton}
           class="w-full h-full p-0 m-0 terminal-container"
           @click=${(e: Event) => this.handleClick(e)}

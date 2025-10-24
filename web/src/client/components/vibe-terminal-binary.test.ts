@@ -52,6 +52,7 @@ describe('VibeTerminalBinary', () => {
         .cols=${80}
         .rows=${24}
         .fontSize=${14}
+        .useDirectKeyboard=${false}
       ></vibe-terminal-binary>
     `);
   });
