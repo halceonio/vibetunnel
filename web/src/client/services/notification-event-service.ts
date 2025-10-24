@@ -12,6 +12,7 @@ export class NotificationEventService {
   private isConnected = false;
   private connectionStateHandlers: Set<ConnectionStateHandler> = new Set();
   private eventListeners: Map<string, Set<EventHandler>> = new Map();
+  private boundEventListeners: Map<string, (event: MessageEvent) => void> = new Map();
   private reconnectTimer: NodeJS.Timeout | null = null;
   private reconnectDelay = 1000; // Start with 1 second
   private maxReconnectDelay = 30000; // Max 30 seconds
@@ -71,6 +72,7 @@ export class NotificationEventService {
     }
 
     this.eventSource = new EventSource(url);
+    this.boundEventListeners.clear();
 
     // Add readyState logging
     logger.log(
@@ -113,28 +115,15 @@ export class NotificationEventService {
 
     this.eventSource.onmessage = (event) => {
       logger.log('📨 Received SSE message:', event.data);
-      try {
-        const data = JSON.parse(event.data);
-        logger.log('Parsed notification event:', data);
-
-        // If we receive the initial "connected" event, mark as connected
-        if (data.type === 'connected') {
-          logger.log('✅ Received connected event from SSE');
-          if (!this.isConnected) {
-            this.isConnected = true;
-            this.isConnecting = false;
-            this.notifyConnectionState(true);
-          }
-        }
-
-        // Notify listeners for this event type
-        if (data.type) {
-          this.notify(data.type, data);
-        }
-      } catch (_error) {
-        logger.log('Received non-JSON event:', event.data);
-      }
+      this.handleEventPayload('message', event);
     };
+
+    // Always listen for the initial connected event even if no listeners registered yet
+    this.ensureEventListener('connected');
+    // Rebind listeners that may have been added before the EventSource existed
+    for (const eventType of this.eventListeners.keys()) {
+      this.ensureEventListener(eventType);
+    }
 
     this.eventSource.onerror = (error) => {
       // EventSource error events don't contain much information
@@ -185,6 +174,8 @@ export class NotificationEventService {
       this.isConnected = false;
       this.notifyConnectionState(false);
     }
+
+    this.boundEventListeners.clear();
   }
 
   /**
@@ -201,6 +192,7 @@ export class NotificationEventService {
     if (this.eventSource) {
       this.eventSource.close();
       this.eventSource = null;
+      this.boundEventListeners.clear();
     }
 
     this.reconnectTimer = setTimeout(() => {
@@ -241,6 +233,8 @@ export class NotificationEventService {
     }
     this.eventListeners.get(eventType)?.add(handler);
 
+    this.ensureEventListener(eventType);
+
     // Return unsubscribe function
     return () => {
       this.off(eventType, handler);
@@ -252,6 +246,62 @@ export class NotificationEventService {
    */
   off(eventType: string, handler: EventHandler): void {
     this.eventListeners.get(eventType)?.delete(handler);
+  }
+
+  private ensureEventListener(eventType: string): void {
+    if (!this.eventSource) {
+      return;
+    }
+
+    if (this.boundEventListeners.has(eventType)) {
+      return;
+    }
+
+    const listener = (event: MessageEvent) => {
+      this.handleEventPayload(eventType, event);
+    };
+
+    this.boundEventListeners.set(eventType, listener);
+    this.eventSource.addEventListener(eventType, listener as EventListener);
+  }
+
+  private handleEventPayload(eventType: string, event: MessageEvent): void {
+    const label = eventType === 'message' ? 'default' : eventType;
+    logger.debug('🔔 Notification event received:', label);
+
+    let parsed: unknown = event.data;
+    if (typeof event.data === 'string' && event.data.length > 0) {
+      try {
+        parsed = JSON.parse(event.data);
+      } catch {
+        // Keep raw string payloads to allow custom handling
+      }
+    }
+
+    if (eventType === 'connected' && !this.isConnected) {
+      logger.log('✅ Connected event received via SSE');
+      this.isConnected = true;
+      this.isConnecting = false;
+      this.notifyConnectionState(true);
+    }
+
+    const payload =
+      parsed && typeof parsed === 'object'
+        ? {
+            ...(parsed as Record<string, unknown>),
+            type:
+              (parsed as Record<string, unknown>).type ??
+              (eventType === 'message' ? undefined : eventType),
+          }
+        : parsed;
+
+    if (eventType !== 'message') {
+      this.notify(eventType, payload);
+    } else if (payload && typeof payload === 'object' && 'type' in (payload as object)) {
+      this.notify((payload as { type: string }).type, payload);
+    } else {
+      this.notify('message', payload);
+    }
   }
 
   /**

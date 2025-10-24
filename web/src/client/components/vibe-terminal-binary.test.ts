@@ -151,11 +151,19 @@ describe('VibeTerminalBinary', () => {
       totalEvents: 1500,
       chunkEventCount: 1000,
       initialTailLines: 1000,
+      events: [
+        [0, 'o', 'preview line 1'],
+        [0, 'o', 'preview line 2'],
+      ],
     });
 
     const detail = await eventPromise;
     expect(detail.hasMore).toBe(true);
     expect(detail.initialTailLines).toBe(1000);
+
+    await element.updateComplete;
+    const preview = element.querySelector('.history-chunk-preview');
+    expect(preview).toBeTruthy();
   });
 
   it('should send input text via HTTP POST', async () => {

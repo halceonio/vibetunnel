@@ -49,6 +49,8 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
   @state() private showScrollToBottomButton = false;
   @state() private currentCols = 80;
   @state() private currentRows = 24;
+  @state() private historyPreviewLines: string[] | null = null;
+  @state() private historyPreviewMode: string | null = null;
 
   @query('#terminal-container') private terminalContainer?: HTMLElement;
   @query('.terminal-scroll-container') private scrollContainer?: HTMLElement;
@@ -171,6 +173,35 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
           height: ${lineHeight}px !important;
           line-height: ${lineHeight}px !important;
         }
+
+        .history-chunk-preview {
+          font-family: inherit;
+          margin-bottom: 1rem;
+          padding: 0.75rem 0.5rem;
+          border-left: 2px solid var(--terminal-history-accent, rgba(255,255,255,0.3));
+          background: rgba(0, 0, 0, 0.25);
+          border-radius: 0.5rem;
+        }
+
+        .history-chunk-lines {
+          max-height: 300px;
+          overflow-y: auto;
+          font-size: 0.9em;
+          line-height: ${lineHeight * 0.95}px;
+        }
+
+        .history-chunk-line {
+          white-space: pre-wrap;
+          word-break: break-word;
+          color: var(--terminal-foreground, #e4e4e4);
+          opacity: 0.9;
+        }
+
+        .history-chunk-header {
+          text-transform: uppercase;
+          letter-spacing: 0.08em;
+          margin-bottom: 0.5rem;
+        }
       </style>
       <div class="relative h-full flex flex-col">
         <!-- Terminal container -->
@@ -179,6 +210,7 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
           class="terminal-scroll-container flex-1 overflow-auto ${baseTheme}"
           style="font-size: ${this.fontSize}px;"
         >
+          ${this.renderHistoryPreview()}
           <!-- Use parent's render for buffer content -->
           ${super.render()}
         </div>
@@ -246,6 +278,8 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
       mode: payload.mode ?? 'tail',
     };
 
+    this.applyHistoryPreview(payload);
+
     this.dispatchEvent(
       new CustomEvent<HistoryBootstrapInfo>('terminal-history-bootstrap', {
         detail: bootstrapInfo,
@@ -253,6 +287,68 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
       })
     );
   };
+
+  private applyHistoryPreview(payload: HistoryChunkPayload) {
+    const lines = this.convertHistoryChunkToLines(payload?.events);
+    if (lines.length === 0) {
+      return;
+    }
+
+    this.historyPreviewLines = lines;
+    this.historyPreviewMode = payload.mode ?? 'tail';
+    if (this.terminalContainer) {
+      this.terminalContainer.scrollTop = this.terminalContainer.scrollHeight;
+    }
+  }
+
+  private convertHistoryChunkToLines(events: unknown): string[] {
+    if (!Array.isArray(events)) {
+      return [];
+    }
+
+    const lines: string[] = [];
+    for (const event of events) {
+      if (!Array.isArray(event) || event.length < 3) continue;
+      const [, type, payload] = event;
+      if (type !== 'o' || typeof payload !== 'string') continue;
+
+      const segments = payload.replace(/\r/g, '').split('\n');
+      for (let i = 0; i < segments.length; i++) {
+        const segment = segments[i];
+        // Drop trailing empty segment that results from split on ending newline
+        if (i === segments.length - 1 && segment === '') {
+          continue;
+        }
+        lines.push(segment);
+      }
+    }
+
+    return lines;
+  }
+
+  private renderHistoryPreview() {
+    if (!this.historyPreviewLines || this.historyPreviewLines.length === 0) {
+      return null;
+    }
+
+    const modeLabel =
+      this.historyPreviewMode === 'tail'
+        ? 'Latest activity'
+        : this.historyPreviewMode || 'Recent activity';
+
+    return html`
+      <div class="history-chunk-preview">
+        <div class="history-chunk-header text-xs text-text-muted">
+          ${modeLabel} (preloaded)
+        </div>
+        <div class="history-chunk-lines">
+          ${this.historyPreviewLines.map(
+            (line, index) => html`<div class="history-chunk-line" data-index=${index}>${line || ' '}</div>`
+          )}
+        </div>
+      </div>
+    `;
+  }
 
   private setupResizeObserver() {
     if (!this.terminalContainer) return;
