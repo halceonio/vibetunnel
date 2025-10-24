@@ -41,3 +41,4 @@ docs/
 .cache/
 .npm/
 .pnpm-store/
+_scratch*

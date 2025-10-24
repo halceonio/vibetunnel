@@ -14,6 +14,19 @@ import type { TerminalThemeId } from '../../utils/terminal-themes.js';
 
 const logger = createLogger('ui-state-manager');
 
+export interface HistoryBootstrapInfo {
+  hasMore: boolean;
+  totalEvents: number | null;
+  totalOutputEvents: number | null;
+  chunkEventCount: number | null;
+  chunkOutputEvents: number | null;
+  chunkStartOffset: number | null;
+  previousOffset: number | null;
+  nextOffset: number | null;
+  initialTailLines: number | null;
+  mode?: string;
+}
+
 export interface UIState {
   // Connection state
   connected: boolean;
@@ -64,6 +77,7 @@ export interface UIState {
 
   // Terminal history state
   hasTruncatedHistory: boolean;
+  historyBootstrapInfo: HistoryBootstrapInfo | null;
 }
 
 export interface UIStateCallbacks {
@@ -121,6 +135,7 @@ export class UIStateManager {
 
     // Terminal history state
     hasTruncatedHistory: false,
+    historyBootstrapInfo: null,
   };
 
   private callbacks: UIStateCallbacks | null = null;
@@ -285,6 +300,11 @@ export class UIStateManager {
       return;
     }
     this.state.hasTruncatedHistory = value;
+    this.callbacks?.requestUpdate();
+  }
+
+  setHistoryBootstrapInfo(info: HistoryBootstrapInfo | null): void {
+    this.state.historyBootstrapInfo = info;
     this.callbacks?.requestUpdate();
   }
 

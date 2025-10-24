@@ -99,23 +99,14 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
 
   setShowQuickKeys(value: boolean): void {
     this.showQuickKeys = value;
+
     if (!value) {
-      // When hiding quick keys, also clear focus states
-      this.hiddenInputFocused = false;
+      logger.log('Quick keys hidden by external trigger, preserving keyboard focus');
+      return;
+    }
 
-      // Clear focus retention interval
-      if (this.focusRetentionInterval) {
-        clearInterval(this.focusRetentionInterval);
-        this.focusRetentionInterval = null;
-      }
-
-      // Blur the hidden input but don't exit keyboard mode immediately
-      // Let the blur handler deal with exiting keyboard mode after checks
-      if (this.hiddenInput) {
-        this.hiddenInput.blur();
-      }
-
-      logger.log('Quick keys force hidden by external trigger');
+    if (this.keyboardMode && this.hiddenInput) {
+      this.hiddenInput.focus();
     }
   }
 
@@ -189,16 +180,6 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
       // Make sure it's in the DOM
       if (!this.hiddenInput.parentNode) {
         document.body.appendChild(this.hiddenInput);
-      }
-    }
-
-    // Show quick keys immediately when entering keyboard mode
-    // Don't wait for keyboard to appear - this provides immediate visual feedback
-    if (this.keyboardMode && !this.showQuickKeys) {
-      this.showQuickKeys = true;
-      if (this.callbacks) {
-        this.callbacks.updateShowQuickKeys(true);
-        logger.log('Showing quick keys immediately in keyboard mode');
       }
     }
 
@@ -353,12 +334,13 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
         this.hiddenInput.style.pointerEvents = 'auto';
       }
 
-      // If we're in keyboard mode, show quick keys immediately
+      // If we're in keyboard mode, keep quick keys state in sync with preference
       if (this.keyboardMode) {
-        this.showQuickKeys = true;
         if (this.callbacks) {
-          this.callbacks.updateShowQuickKeys(true);
-          logger.log('Showing quick keys due to keyboard mode');
+          this.callbacks.updateShowQuickKeys(this.showQuickKeys);
+          logger.log(
+            `Keyboard mode focus - syncing quick keys visibility to ${this.showQuickKeys}`
+          );
         }
 
         // iOS specific: Set selection to trigger keyboard
@@ -366,13 +348,10 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
           this.hiddenInput.setSelectionRange(0, 0);
         }
       } else {
-        // Only show quick keys if keyboard is actually visible
+        // Only show quick keys if keyboard is actually visible and user prefers them
         const keyboardHeight = this.callbacks?.getKeyboardHeight() ?? 0;
-        if (keyboardHeight > 50) {
-          this.showQuickKeys = true;
-          if (this.callbacks) {
-            this.callbacks.updateShowQuickKeys(true);
-          }
+        if (keyboardHeight > 50 && this.showQuickKeys && this.callbacks) {
+          this.callbacks.updateShowQuickKeys(true);
         }
       }
 
@@ -634,7 +613,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
     // Use requestAnimationFrame to ensure DOM has updated
     requestAnimationFrame(() => {
       const disableFocusManagement = this.callbacks?.getDisableFocusManagement() ?? false;
-      if (!disableFocusManagement && this.hiddenInput && this.showQuickKeys) {
+      if (!disableFocusManagement && this.hiddenInput && this.keyboardMode) {
         this.hiddenInput.focus();
       }
     });
@@ -679,7 +658,7 @@ export class DirectKeyboardManager extends ManagerEventEmitter {
 
   shouldRefocusHiddenInput(): boolean {
     const disableFocusManagement = this.callbacks?.getDisableFocusManagement() ?? false;
-    return !disableFocusManagement && !!this.hiddenInput && this.showQuickKeys;
+    return !disableFocusManagement && !!this.hiddenInput && this.keyboardMode;
   }
 
   refocusHiddenInput(): void {

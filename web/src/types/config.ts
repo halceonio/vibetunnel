@@ -89,7 +89,7 @@ export const RECOMMENDED_NOTIFICATION_PREFERENCES: NotificationPreferences = {
   enabled: true,
   sessionStart: false,
   sessionExit: true,
-  commandCompletion: false,
+  commandCompletion: true,
   commandError: true,
   bell: true,
   claudeTurn: true,

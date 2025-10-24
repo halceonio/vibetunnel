@@ -48,6 +48,7 @@ export interface OverlaysCallbacks {
 
   // Keyboard button
   onKeyboardButtonClick: () => void;
+  onKeyboardQuickKeysToggle?: () => void;
 
   // Navigation
   handleBack: () => void;
@@ -63,6 +64,80 @@ export class OverlaysContainer extends LitElement {
   @property({ type: Object }) session: Session | null = null;
   @property({ type: Object }) uiState: UIState | null = null;
   @property({ type: Object }) callbacks: OverlaysCallbacks | null = null;
+  private keyboardPressTimeout: number | null = null;
+  private keyboardLongPressTriggered = false;
+  private keyboardActivePointer: number | null = null;
+
+  private handleKeyboardButtonPointerDown(e: PointerEvent) {
+    if (!this.callbacks) return;
+
+    e.preventDefault();
+    e.stopPropagation();
+
+    this.keyboardLongPressTriggered = false;
+    this.keyboardActivePointer = e.pointerId;
+
+    const target = e.currentTarget as HTMLElement | null;
+    if (target) {
+      target.setPointerCapture(e.pointerId);
+    }
+
+    this.keyboardPressTimeout = window.setTimeout(() => {
+      this.keyboardPressTimeout = null;
+      this.keyboardLongPressTriggered = true;
+      this.callbacks?.onKeyboardQuickKeysToggle?.();
+    }, 500);
+  }
+
+  private clearKeyboardButtonPress(target: EventTarget | null, activateShortPress: boolean) {
+    if (this.keyboardPressTimeout !== null) {
+      clearTimeout(this.keyboardPressTimeout);
+      this.keyboardPressTimeout = null;
+    }
+
+    const wasLongPress = this.keyboardLongPressTriggered;
+
+    if (this.keyboardActivePointer !== null && target instanceof HTMLElement) {
+      try {
+        target.releasePointerCapture(this.keyboardActivePointer);
+      } catch (_error) {
+        // Ignore release errors (pointer may already be released)
+      }
+    }
+
+    this.keyboardActivePointer = null;
+    this.keyboardLongPressTriggered = false;
+
+    if (activateShortPress && !wasLongPress) {
+      this.callbacks?.onKeyboardButtonClick();
+    }
+  }
+
+  private handleKeyboardButtonPointerUp(e: PointerEvent) {
+    if (this.keyboardActivePointer !== e.pointerId) {
+      return;
+    }
+
+    e.preventDefault();
+    e.stopPropagation();
+    this.clearKeyboardButtonPress(e.currentTarget, true);
+  }
+
+  private handleKeyboardButtonPointerLeave(e: PointerEvent) {
+    if (this.keyboardActivePointer !== e.pointerId) {
+      return;
+    }
+
+    this.clearKeyboardButtonPress(e.currentTarget, false);
+  }
+
+  private handleKeyboardButtonPointerCancel(e: PointerEvent) {
+    if (this.keyboardActivePointer !== e.pointerId) {
+      return;
+    }
+
+    this.clearKeyboardButtonPress(e.currentTarget, false);
+  }
 
   render() {
     if (!this.uiState || !this.callbacks) {
@@ -138,12 +213,11 @@ export class OverlaysContainer extends LitElement {
           ? html`
             <div
               class="keyboard-button"
-              @pointerdown=${(e: PointerEvent) => {
-                e.preventDefault();
-                e.stopPropagation();
-                this.callbacks?.onKeyboardButtonClick();
-              }}
-              title="Show keyboard"
+              @pointerdown=${(e: PointerEvent) => this.handleKeyboardButtonPointerDown(e)}
+              @pointerup=${(e: PointerEvent) => this.handleKeyboardButtonPointerUp(e)}
+              @pointerleave=${(e: PointerEvent) => this.handleKeyboardButtonPointerLeave(e)}
+              @pointercancel=${(e: PointerEvent) => this.handleKeyboardButtonPointerCancel(e)}
+              title="Show keyboard (long press for quick keys)"
             >
               ⌨
             </div>

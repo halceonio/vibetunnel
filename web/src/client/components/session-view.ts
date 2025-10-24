@@ -45,7 +45,7 @@ import {
   type TerminalStateCallbacks,
 } from './session-view/terminal-lifecycle-manager.js';
 import { TerminalSettingsManager } from './session-view/terminal-settings-manager.js';
-import { UIStateManager } from './session-view/ui-state-manager.js';
+import { UIStateManager, type HistoryBootstrapInfo } from './session-view/ui-state-manager.js';
 import type { AppPreferences } from './settings.js';
 import { STORAGE_KEY } from './settings.js';
 
@@ -100,6 +100,8 @@ export class SessionView extends LitElement {
   private boundHandleTerminalResize = this.handleTerminalResize.bind(this);
   private boundHandleTerminalReady = this.handleTerminalReady.bind(this);
   private boundHandleTerminalHistory = this.handleTerminalHistory.bind(this);
+  private boundHandleTerminalHistoryBootstrap =
+    this.handleTerminalHistoryBootstrap.bind(this);
 
   private showFullLogModal = false;
   private fullLogLoading = false;
@@ -133,6 +135,7 @@ export class SessionView extends LitElement {
       }),
       setShowQuickKeys: (value: boolean) => {
         this.uiStateManager.setShowQuickKeys(value);
+        this.directKeyboardManager.setShowQuickKeys(value);
         this.updateTerminalTransform();
       },
       setShowFileBrowser: (value: boolean) => {
@@ -580,6 +583,11 @@ export class SessionView extends LitElement {
         }
       }
 
+      if (sessionChanged) {
+        this.uiStateManager.setHistoryBootstrapInfo(null);
+        this.uiStateManager.setHasTruncatedHistory(false);
+      }
+
       // Update managers with new session
       if (this.inputManager) {
         this.inputManager.setSession(this.session);
@@ -823,22 +831,37 @@ export class SessionView extends LitElement {
     // If enabling direct keyboard on mobile, ensure hidden input
     const state = this.uiStateManager.getState();
     if (state.isMobile && state.useDirectKeyboard) {
+      this.directKeyboardManager.setShowQuickKeys(false);
+      this.uiStateManager.setShowQuickKeys(false);
       this.directKeyboardManager.ensureHiddenInputVisible();
+    } else if (!state.useDirectKeyboard) {
+      this.directKeyboardManager.setShowQuickKeys(false);
+      this.uiStateManager.setShowQuickKeys(false);
     }
   }
 
   private handleKeyboardButtonClick() {
-    // Show quick keys immediately for visual feedback
-    this.uiStateManager.setShowQuickKeys(true);
-
-    // Update terminal transform immediately
+    // Hide quick keys to keep terminal visible and focus the hidden input for native keyboard
+    this.uiStateManager.setShowQuickKeys(false);
+    this.directKeyboardManager.setShowQuickKeys(false);
     this.updateTerminalTransform();
-
-    // Focus the hidden input synchronously - critical for iOS Safari
-    // Must be called directly in the click handler without any delays
     this.directKeyboardManager.focusHiddenInput();
 
     // Request update after all synchronous operations
+    this.requestUpdate();
+  }
+
+  private handleKeyboardQuickKeysToggle() {
+    const current = this.uiStateManager.getState().showQuickKeys;
+    const next = !current;
+    this.uiStateManager.setShowQuickKeys(next);
+    this.directKeyboardManager.setShowQuickKeys(next);
+
+    if (next) {
+      this.directKeyboardManager.focusHiddenInput();
+    }
+
+    this.updateTerminalTransform();
     this.requestUpdate();
   }
 
@@ -885,6 +908,15 @@ export class SessionView extends LitElement {
     } else {
       this.uiStateManager.setHasTruncatedHistory(false);
     }
+  }
+
+  private handleTerminalHistoryBootstrap(event: CustomEvent<HistoryBootstrapInfo>) {
+    if (!event.detail) {
+      return;
+    }
+
+    this.uiStateManager.setHistoryBootstrapInfo(event.detail);
+    this.uiStateManager.setHasTruncatedHistory(Boolean(event.detail.hasMore));
   }
 
   private async openFullLogModal() {
@@ -1369,7 +1401,23 @@ export class SessionView extends LitElement {
                   ? html`
                     <div class="terminal-history-banner text-xs">
                       <span class="truncate">
-                        Older output beyond ${DEFAULT_TERMINAL_HISTORY_LIMIT.toLocaleString()} lines is hidden for performance.
+                        ${(() => {
+                          const info = uiState.historyBootstrapInfo;
+                          const visibleLineEstimate =
+                            info?.chunkOutputEvents ??
+                            info?.chunkEventCount ??
+                            info?.initialTailLines ??
+                            null;
+
+                          if (info && visibleLineEstimate !== null) {
+                            const formattedVisible = visibleLineEstimate.toLocaleString();
+                            return info.hasMore
+                              ? `Showing the latest ${formattedVisible} lines. Older output is available.`
+                              : `Showing the latest ${formattedVisible} lines.`;
+                          }
+
+                          return `Older output beyond ${DEFAULT_TERMINAL_HISTORY_LIMIT.toLocaleString()} lines is hidden for performance.`;
+                        })()}
                       </span>
                       <button
                         class="terminal-history-button"
@@ -1395,6 +1443,7 @@ export class SessionView extends LitElement {
                 .onTerminalResize=${this.boundHandleTerminalResize}
                 .onTerminalReady=${this.boundHandleTerminalReady}
                 .onTerminalHistory=${this.boundHandleTerminalHistory}
+                .onTerminalHistoryBootstrap=${this.boundHandleTerminalHistoryBootstrap}
               ></terminal-renderer>
             `
                 : ''
@@ -1541,6 +1590,7 @@ export class SessionView extends LitElement {
 
               // Keyboard button
               onKeyboardButtonClick: () => this.handleKeyboardButtonClick(),
+              onKeyboardQuickKeysToggle: () => this.handleKeyboardQuickKeysToggle(),
 
               // Navigation
               handleBack: () => this.handleBack(),
