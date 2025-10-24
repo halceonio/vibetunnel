@@ -6,10 +6,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { HttpMethod } from '../../shared/types.js';
 import './vibe-terminal-binary.js';
 import { authClient } from '../services/auth-client.js';
+import {
+  bufferSubscriptionService,
+  type HistoryChunkPayload,
+} from '../services/buffer-subscription-service.js';
 import type { VibeTerminalBinary } from './vibe-terminal-binary.js';
+import type { HistoryBootstrapInfo } from './session-view/ui-state-manager.js';
 
 describe('VibeTerminalBinary', () => {
   let element: VibeTerminalBinary;
+  let historyChunkHandler: ((payload: HistoryChunkPayload) => void) | null;
 
   beforeEach(async () => {
     // Mock fetch
@@ -20,6 +26,25 @@ describe('VibeTerminalBinary', () => {
       email: 'test@example.com',
       token: 'test-token',
     });
+
+    historyChunkHandler = null;
+
+    vi.spyOn(bufferSubscriptionService, 'subscribe').mockImplementation(() => {
+      return () => {};
+    });
+
+    vi.spyOn(bufferSubscriptionService, 'getLatestHistoryChunk').mockReturnValue(undefined);
+
+    vi.spyOn(bufferSubscriptionService, 'subscribeToHistoryChunk').mockImplementation(
+      (_sessionId, handler) => {
+        historyChunkHandler = handler;
+        return () => {
+          if (historyChunkHandler === handler) {
+            historyChunkHandler = null;
+          }
+        };
+      }
+    );
 
     element = await fixture<VibeTerminalBinary>(html`
       <vibe-terminal-binary
@@ -33,6 +58,7 @@ describe('VibeTerminalBinary', () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    historyChunkHandler = null;
   });
 
   it('should render terminal container', async () => {
@@ -99,6 +125,37 @@ describe('VibeTerminalBinary', () => {
 
     await element.updateComplete;
     expect(element.theme).toBe(newTheme);
+  });
+
+  it('should dispatch terminal-history-bootstrap when history chunk arrives', async () => {
+    await element.updateComplete;
+
+    const eventPromise = new Promise<HistoryBootstrapInfo>((resolve) => {
+      element.addEventListener(
+        'terminal-history-bootstrap',
+        (event: Event) => {
+          resolve((event as CustomEvent<HistoryBootstrapInfo>).detail);
+        },
+        { once: true }
+      );
+    });
+
+    if (!historyChunkHandler) {
+      throw new Error('History chunk handler was not registered');
+    }
+
+    historyChunkHandler({
+      type: 'history-chunk',
+      sessionId: 'test-session-id',
+      hasMore: true,
+      totalEvents: 1500,
+      chunkEventCount: 1000,
+      initialTailLines: 1000,
+    });
+
+    const detail = await eventPromise;
+    expect(detail.hasMore).toBe(true);
+    expect(detail.initialTailLines).toBe(1000);
   });
 
   it('should send input text via HTTP POST', async () => {

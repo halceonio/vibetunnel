@@ -757,7 +757,17 @@ export class SessionView extends LitElement {
 
   // Mobile input methods
   private handleMobileInputToggle() {
-    this.mobileInputManager.handleMobileInputToggle();
+    const state = this.uiStateManager.getState();
+
+    if (state.showMobileInput) {
+      this.uiStateManager.setShowMobileInput(false);
+    }
+
+    if (!state.useDirectKeyboard) {
+      this.toggleDirectKeyboard();
+    }
+
+    this.handleKeyboardButtonClick();
   }
 
   // Helper methods for MobileInputManager

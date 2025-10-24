@@ -14,6 +14,10 @@ import { html, type PropertyValues } from 'lit';
 import { customElement, property, query, state } from 'lit/decorators.js';
 import { HttpMethod } from '../../shared/types.js';
 import { authClient } from '../services/auth-client.js';
+import {
+  bufferSubscriptionService,
+  type HistoryChunkPayload,
+} from '../services/buffer-subscription-service.js';
 import { calculateCursorPosition } from '../utils/cursor-position.js';
 import { consumeEvent } from '../utils/event-utils.js';
 import { createLogger } from '../utils/logger.js';
@@ -21,6 +25,7 @@ import { TERMINAL_IDS } from '../utils/terminal-constants.js';
 import { TerminalPreferencesManager } from '../utils/terminal-preferences.js';
 import type { TerminalThemeId } from '../utils/terminal-themes.js';
 import { getCurrentTheme } from '../utils/theme-utils.js';
+import type { HistoryBootstrapInfo } from './session-view/ui-state-manager.js';
 import { VibeTerminalBuffer } from './vibe-terminal-buffer.js';
 
 const logger = createLogger('vibe-terminal-binary');
@@ -52,6 +57,7 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
   private preferencesManager = TerminalPreferencesManager.getInstance();
   private isScrolledToBottom = true;
   private hiddenInput?: HTMLInputElement;
+  private historyChunkUnsubscribe: (() => void) | null = null;
 
   connectedCallback() {
     super.connectedCallback();
@@ -77,6 +83,7 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     // Clean up event listeners
     window.removeEventListener('terminal-font-size-changed', this.handleFontSizeChange);
     window.removeEventListener('terminal-theme-changed', this.handleThemeChange);
+    this.teardownHistoryChunkSubscription();
 
     // Clean up hidden input
     if (this.hiddenInput) {
@@ -101,6 +108,8 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
     if (this.terminalContainer && !this.disableClick) {
       this.setupInputHandling();
     }
+
+    this.setupHistoryChunkSubscription();
 
     // Set up resize observer
     this.setupResizeObserver();
@@ -128,6 +137,10 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
       this.currentCols = this.cols;
       this.currentRows = this.rows;
       this.updateTerminalSize();
+    }
+
+    if (changedProperties.has('sessionId')) {
+      this.setupHistoryChunkSubscription();
     }
   }
 
@@ -189,6 +202,57 @@ export class VibeTerminalBinary extends VibeTerminalBuffer {
       </div>
     `;
   }
+
+  private setupHistoryChunkSubscription() {
+    this.teardownHistoryChunkSubscription();
+
+    if (!this.sessionId) {
+      return;
+    }
+
+    this.historyChunkUnsubscribe = bufferSubscriptionService.subscribeToHistoryChunk(
+      this.sessionId,
+      this.handleHistoryChunk
+    );
+  }
+
+  private teardownHistoryChunkSubscription() {
+    if (this.historyChunkUnsubscribe) {
+      this.historyChunkUnsubscribe();
+      this.historyChunkUnsubscribe = null;
+    }
+  }
+
+  private handleHistoryChunk = (payload: HistoryChunkPayload) => {
+    if (!this.sessionId) {
+      return;
+    }
+
+    if (payload.sessionId && payload.sessionId !== this.sessionId) {
+      return;
+    }
+
+    const bootstrapInfo: HistoryBootstrapInfo = {
+      hasMore: Boolean(payload.hasMore),
+      totalEvents: payload.totalEvents ?? null,
+      totalOutputEvents: payload.totalOutputEvents ?? null,
+      chunkEventCount: payload.chunkEventCount ?? null,
+      chunkOutputEvents: payload.chunkOutputEvents ?? null,
+      chunkStartOffset:
+        payload.chunkStartOffset !== undefined ? payload.chunkStartOffset : null,
+      previousOffset: payload.previousOffset ?? null,
+      nextOffset: payload.nextOffset ?? null,
+      initialTailLines: payload.initialTailLines ?? null,
+      mode: payload.mode ?? 'tail',
+    };
+
+    this.dispatchEvent(
+      new CustomEvent<HistoryBootstrapInfo>('terminal-history-bootstrap', {
+        detail: bootstrapInfo,
+        bubbles: true,
+      })
+    );
+  };
 
   private setupResizeObserver() {
     if (!this.terminalContainer) return;

@@ -37,6 +37,7 @@ interface SessionViewTestInterface extends SessionView {
     setTerminalMaxCols: (value: number) => void;
     setShowMobileInput: (value: boolean) => void;
     setShowFileBrowser: (value: boolean) => void;
+    setUseDirectKeyboard: (value: boolean) => void;
   };
   connectionManager?: {
     getIsConnected: () => boolean;
@@ -543,6 +544,26 @@ describe('SessionView', () => {
           mobileOverlayDiv ||
           testElement.uiStateManager.getState().showMobileInput
       ).toBeTruthy();
+    });
+
+    it('should enable direct keyboard when mobile toggle pressed', async () => {
+      const testElement = element as SessionViewTestInterface;
+
+      testElement.uiStateManager.setUseDirectKeyboard(false);
+      await element.updateComplete;
+
+      const toggleButton = Array.from(element.querySelectorAll('button')).find((btn) =>
+        btn.textContent?.trim().includes('ABC123')
+      );
+
+      expect(toggleButton).toBeTruthy();
+
+      toggleButton?.dispatchEvent(new Event('click', { bubbles: true }));
+      await element.updateComplete;
+
+      const state = testElement.uiStateManager.getState();
+      expect(state.useDirectKeyboard).toBe(true);
+      expect(state.showMobileInput).toBe(false);
     });
 
     it('should send mobile input text', async () => {

@@ -87,6 +87,24 @@ type BufferUpdateHandler = (snapshot: BufferSnapshot) => void;
 // Magic byte for binary messages - identifies buffer update packets
 const BUFFER_MAGIC_BYTE = 0xbf;
 
+export interface HistoryChunkPayload {
+  type: 'history-chunk';
+  sessionId?: string;
+  hasMore?: boolean;
+  totalEvents?: number;
+  totalOutputEvents?: number;
+  chunkEventCount?: number;
+  chunkOutputEvents?: number;
+  chunkStartOffset?: number | null;
+  previousOffset?: number | null;
+  nextOffset?: number | null;
+  initialTailLines?: number | null;
+  mode?: string;
+  events?: unknown[];
+}
+
+type HistoryChunkHandler = (payload: HistoryChunkPayload) => void;
+
 /**
  * BufferSubscriptionService manages WebSocket connections for real-time
  * terminal buffer streaming. It handles connection lifecycle, authentication,
@@ -110,6 +128,8 @@ export class BufferSubscriptionService {
   private isConnecting = false;
   private messageQueue: Array<{ type: string; sessionId?: string }> = [];
   private lastSnapshots = new Map<string, BufferSnapshot>();
+  private historyChunkHandlers = new Map<string, Set<HistoryChunkHandler>>();
+  private latestHistoryChunks = new Map<string, HistoryChunkPayload>();
 
   private initialized = false;
   private noAuthMode: boolean | null = null;
@@ -331,6 +351,10 @@ export class BufferSubscriptionService {
           this.sendMessage({ type: 'pong' });
           break;
 
+        case 'history-chunk':
+          this.handleHistoryChunkMessage(message as HistoryChunkPayload);
+          break;
+
         case 'error':
           logger.error(`server error: ${message.message}`);
           break;
@@ -417,6 +441,37 @@ export class BufferSubscriptionService {
   }
 
   /**
+   * Register for history chunk notifications for a session.
+   */
+  subscribeToHistoryChunk(sessionId: string, handler: HistoryChunkHandler): () => void {
+    if (!this.historyChunkHandlers.has(sessionId)) {
+      this.historyChunkHandlers.set(sessionId, new Set());
+    }
+
+    const handlers = this.historyChunkHandlers.get(sessionId)!;
+    handlers.add(handler);
+
+    const latest = this.latestHistoryChunks.get(sessionId);
+    if (latest) {
+      queueMicrotask(() => handler(latest));
+    }
+
+    return () => {
+      const sessionHandlers = this.historyChunkHandlers.get(sessionId);
+      if (!sessionHandlers) return;
+
+      sessionHandlers.delete(handler);
+      if (sessionHandlers.size === 0) {
+        this.historyChunkHandlers.delete(sessionId);
+      }
+    };
+  }
+
+  getLatestHistoryChunk(sessionId: string): HistoryChunkPayload | undefined {
+    return this.latestHistoryChunks.get(sessionId);
+  }
+
+  /**
    * Subscribe to buffer updates for a session
    *
    * Creates a subscription to receive real-time terminal buffer updates for
@@ -488,6 +543,9 @@ export class BufferSubscriptionService {
           this.subscriptions.delete(sessionId);
           this.lastSnapshots.delete(sessionId);
           this.sendMessage({ type: 'unsubscribe', sessionId });
+
+          this.historyChunkHandlers.delete(sessionId);
+          this.latestHistoryChunks.delete(sessionId);
         }
       }
     };
@@ -532,6 +590,38 @@ export class BufferSubscriptionService {
     this.subscriptions.clear();
     this.lastSnapshots.clear();
     this.messageQueue = [];
+    this.historyChunkHandlers.clear();
+    this.latestHistoryChunks.clear();
+  }
+
+  private handleHistoryChunkMessage(message: HistoryChunkPayload) {
+    const sessionId = typeof message.sessionId === 'string' ? message.sessionId : null;
+
+    if (!sessionId) {
+      logger.warn('Received history chunk without sessionId');
+      return;
+    }
+
+    const payload: HistoryChunkPayload = {
+      ...message,
+      type: 'history-chunk',
+      sessionId,
+    };
+
+    this.latestHistoryChunks.set(sessionId, payload);
+
+    const handlers = this.historyChunkHandlers.get(sessionId);
+    if (!handlers || handlers.size === 0) {
+      return;
+    }
+
+    handlers.forEach((handler) => {
+      try {
+        handler(payload);
+      } catch (error) {
+        logger.error('Error in history chunk handler', error);
+      }
+    });
   }
 }
 
