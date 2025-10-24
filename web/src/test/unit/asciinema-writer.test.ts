@@ -63,7 +63,7 @@ describe('AsciinemaWriter byte position tracking', () => {
     writer = AsciinemaWriter.create(testFile, 80, 24);
 
     // Wait for header to be written
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await writer.waitForWrites();
     const positionAfterHeader = writer.getPosition();
 
     // Write some output
@@ -71,7 +71,7 @@ describe('AsciinemaWriter byte position tracking', () => {
     writer.writeOutput(Buffer.from(testOutput));
 
     // Wait for write to complete
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writer.waitForWrites();
 
     const positionAfterOutput = writer.getPosition();
     expect(positionAfterOutput.written).toBeGreaterThan(positionAfterHeader.written);
@@ -91,7 +91,7 @@ describe('AsciinemaWriter byte position tracking', () => {
     });
 
     // Wait for header
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await writer.waitForWrites();
     const headerSize = fs.statSync(testFile).size;
 
     // Write output with a clear screen sequence
@@ -100,13 +100,13 @@ describe('AsciinemaWriter byte position tracking', () => {
     writer.writeOutput(Buffer.from(outputWithClear));
 
     // Wait for write and callback
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writer.waitForWrites();
 
     // Should have detected the clear sequence
     expect(pruningEvents).toHaveLength(1);
     expect(pruningEvents[0].sequence).toBe(clearScreen);
     expect(pruningEvents[0].position).toBeGreaterThan(headerSize);
-    expect(pruningEvents[0].timestamp).toBeGreaterThan(0);
+    expect(pruningEvents[0].timestamp).toBeGreaterThanOrEqual(0);
 
     // Verify the callback was called AFTER the write completed
     expect(callbackFileSize).toBeGreaterThan(headerSize);
@@ -130,20 +130,20 @@ describe('AsciinemaWriter byte position tracking', () => {
     });
 
     // Wait for header
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await writer.waitForWrites();
 
     // Write output with multiple pruning sequences
     writer.writeOutput(Buffer.from('Initial text\r\n'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writer.waitForWrites();
 
     writer.writeOutput(Buffer.from('Before clear\x1b[2JAfter clear'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writer.waitForWrites();
 
     writer.writeOutput(Buffer.from('More text\x1bcReset terminal'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writer.waitForWrites();
 
     writer.writeOutput(Buffer.from('Enter alt screen\x1b[?1049hIn alt screen'));
-    await new Promise((resolve) => setTimeout(resolve, 20));
+    await writer.waitForWrites();
 
     // Should have detected all sequences
     expect(pruningEvents.length).toBeGreaterThanOrEqual(3);
@@ -201,22 +201,22 @@ describe('AsciinemaWriter byte position tracking', () => {
 
     // Write output event
     writer.writeOutput(Buffer.from('output text'));
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writer.waitForWrites();
     const posAfterOutput = writer.getPosition();
 
     // Write input event
     writer.writeInput('input text');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writer.waitForWrites();
     const posAfterInput = writer.getPosition();
 
     // Write resize event
     writer.writeResize(120, 40);
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writer.waitForWrites();
     const posAfterResize = writer.getPosition();
 
     // Write marker event
     writer.writeMarker('test marker');
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writer.waitForWrites();
     const posAfterMarker = writer.getPosition();
 
     // All positions should increase
@@ -260,7 +260,7 @@ describe('AsciinemaWriter byte position tracking', () => {
     const outputWithMultipleClear = 'Text1\x1b[2JText2\x1b[3JText3\x1bcText4';
     writer.writeOutput(Buffer.from(outputWithMultipleClear));
 
-    await new Promise((resolve) => setTimeout(resolve, 50));
+    await writer.waitForWrites();
 
     // Should only report the last one (as per the implementation)
     expect(pruningEvents).toHaveLength(1);

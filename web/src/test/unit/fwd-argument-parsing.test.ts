@@ -69,7 +69,10 @@ describe('fwd.ts argument parsing with -- separator', () => {
           // These should be found in PATH
           expect(result.useShell).toBe(false);
           expect(result.resolvedFrom).toBe('path');
-          expect(result.command).toBe(test.cmd[0]);
+          // Some environments resolve to the absolute path; others keep the bare command
+          expect(
+            result.command === test.cmd[0] || result.command.endsWith(`/${test.cmd[0]}`)
+          ).toBe(true);
           expect(result.args).toEqual(test.cmd.slice(1));
         }
       }
@@ -133,7 +136,7 @@ describe('fwd.ts argument parsing with -- separator', () => {
       const command = ['echo', 'test'];
       const result = ProcessUtils.resolveCommand(command);
 
-      expect(result.command).toBe('echo');
+      expect(result.command === 'echo' || result.command.endsWith('/echo')).toBe(true);
       expect(result.args).toEqual(['test']);
       expect(result.resolvedFrom).toBe('path');
       expect(result.useShell).toBe(false);

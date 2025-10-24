@@ -19,6 +19,8 @@ describe('Claude Turn Events', () => {
   let mockRequest: Partial<Request> & {
     headers: Record<string, string>;
     on: ReturnType<typeof vi.fn>;
+    get: ReturnType<typeof vi.fn>;
+    socket: { remoteAddress?: string };
   };
   let mockResponse: Response;
   let eventsRouter: ReturnType<typeof createEventsRouter>;
@@ -32,6 +34,15 @@ describe('Claude Turn Events', () => {
     mockRequest = {
       headers: {},
       on: vi.fn(),
+      get: vi.fn((name: string) => {
+        const key = name.toLowerCase();
+        const headerEntry = Object.entries(mockRequest.headers).find(
+          ([headerName]) => headerName.toLowerCase() === key
+        );
+        return headerEntry ? headerEntry[1] : undefined;
+      }),
+      ip: '127.0.0.1',
+      socket: { remoteAddress: '127.0.0.1' },
     };
 
     // Create mock response with SSE methods

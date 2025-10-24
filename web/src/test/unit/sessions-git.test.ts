@@ -1,10 +1,21 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ConfigService } from '../../server/services/config-service.js';
+import type { VibeTunnelConfig } from '../../types/config.js';
 
 // Create mock functions
 const mockExecFile = vi.fn();
 const mockCreateSession = vi.fn();
 const mockSendControlMessage = vi.fn();
 const mockIsMacAppConnected = vi.fn();
+const mockConfigService: Pick<ConfigService, 'getConfig'> = {
+  getConfig: vi.fn<[], VibeTunnelConfig>(),
+};
+
+const defaultConfig: VibeTunnelConfig = {
+  version: 2,
+  quickStartCommands: [],
+  repositoryBasePath: '/home/user',
+};
 
 // Mock child_process
 vi.mock('child_process', () => ({
@@ -98,6 +109,8 @@ describe('Session Creation with Git Info', () => {
     mockSendControlMessage.mockReset();
     mockIsMacAppConnected.mockReset();
     mockIsMacAppConnected.mockReturnValue(false);
+    mockConfigService.getConfig.mockReset();
+    mockConfigService.getConfig.mockReturnValue(defaultConfig);
 
     // Set up Express app
     app = express();
@@ -115,6 +128,7 @@ describe('Session Creation with Git Info', () => {
       remoteRegistry: mockRemoteRegistry,
       isHQMode: false,
       activityMonitor: mockActivityMonitor,
+      configService: mockConfigService,
     };
 
     app.use('/api', sessionsModule.createSessionRoutes(config));

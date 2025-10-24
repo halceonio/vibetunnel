@@ -166,8 +166,9 @@ describe('Sessions API Tests', () => {
       expect(session).toBeDefined();
       expect(session.name).toBe('Long Running Test');
       expect(session.status).toBe('running');
-      expect(session.command).toEqual([
-        'bash',
+      const [commandBinary, ...commandArgs] = session.command;
+      expect(commandBinary === 'bash' || commandBinary.endsWith('/bash')).toBe(true);
+      expect(commandArgs).toEqual([
         '-c',
         'while true; do echo "running"; sleep 1; done',
       ]);
@@ -280,8 +281,9 @@ describe('Sessions API Tests', () => {
       expect(activity).toHaveProperty('isActive');
       expect(activity).toHaveProperty('timestamp');
       expect(activity).toHaveProperty('session');
-      expect(activity.session.command).toEqual([
-        'bash',
+      const [activityCmd, ...activityArgs] = activity.session.command;
+      expect(activityCmd === 'bash' || activityCmd.endsWith('/bash')).toBe(true);
+      expect(activityArgs).toEqual([
         '-c',
         'while true; do echo "running"; sleep 1; done',
       ]);

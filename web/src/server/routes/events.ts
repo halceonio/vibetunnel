@@ -47,7 +47,13 @@ export function createEventsRouter(sessionMonitor?: SessionMonitor): Router {
       `📢 SessionMonitor notification: ${event.type} for session ${event.sessionId} (subscribers: ${clients.size})`
     );
 
-    const payload = `id: ${Date.now()}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    let payload: string;
+    try {
+      payload = `id: ${Date.now()}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`;
+    } catch (error) {
+      logger.warn('Skipping event that could not be serialized for SSE', error);
+      return;
+    }
 
     for (const client of Array.from(clients)) {
       try {

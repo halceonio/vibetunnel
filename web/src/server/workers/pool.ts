@@ -1,4 +1,5 @@
 import { cpus } from 'os';
+import fs from 'fs';
 import { resolve } from 'path';
 import { Worker } from 'worker_threads';
 import { createLogger } from '../utils/logger.js';
@@ -31,17 +32,42 @@ export class WorkerPool {
   private queue: PendingTask[] = [];
   private nextTaskId = 0;
   private readonly size: number;
+  private disabled = false;
+  private disableReason: string | null = null;
 
   constructor(size?: number) {
     const cpuCount = cpus().length;
     this.size = size ?? Math.max(1, Math.min(cpuCount - 1, 4));
 
     for (let i = 0; i < this.size; i++) {
-      this.workers.push(this.createWorker());
+      try {
+        this.workers.push(this.createWorker());
+      } catch (error) {
+        this.disabled = true;
+        this.disableReason = error instanceof Error ? error.message : String(error);
+        logger.warn(
+          `Worker pool disabled – ${this.disableReason}. Falling back to synchronous execution.`
+        );
+        break;
+      }
+    }
+
+    if (this.workers.length === 0) {
+      this.disabled = true;
+      if (!this.disableReason) {
+        this.disableReason = 'worker scripts unavailable';
+        logger.warn(
+          'Worker pool disabled – worker scripts unavailable. Falling back to synchronous execution.'
+        );
+      }
     }
   }
 
   async runTask<T>(type: WorkerTaskType, payload: unknown): Promise<T> {
+    if (this.disabled) {
+      return Promise.reject(new Error(this.disableReason ?? 'worker pool disabled'));
+    }
+
     return new Promise<T>((resolve, reject) => {
       const task: PendingTask = {
         id: this.nextTaskId++,
@@ -63,7 +89,18 @@ export class WorkerPool {
   }
 
   private createWorker(): WorkerWrapper {
-    const workerScript = resolve(__dirname, 'task-runner.js');
+    const candidates = [
+      resolve(__dirname, 'task-runner.js'),
+      resolve(__dirname, '../dist/server/workers/task-runner.js'),
+      resolve(process.cwd(), 'dist/server/workers/task-runner.js'),
+    ];
+
+    const workerScript = candidates.find((candidate) => fs.existsSync(candidate));
+
+    if (!workerScript) {
+      throw new Error(`worker script not found (searched: ${candidates.join(', ')})`);
+    }
+
     const worker = new Worker(workerScript, {
       env: process.env,
     });
@@ -113,6 +150,10 @@ export class WorkerPool {
   }
 
   private handleWorkerFailure(wrapper: WorkerWrapper, error: unknown) {
+    if (this.disabled) {
+      return;
+    }
+
     const pending = wrapper.pending;
     if (pending) {
       pending.reject(error);
@@ -123,11 +164,28 @@ export class WorkerPool {
       this.workers.splice(index, 1);
     }
 
-    this.workers.push(this.createWorker());
+    try {
+      this.workers.push(this.createWorker());
+    } catch (spawnError) {
+      this.disabled = true;
+      this.disableReason =
+        spawnError instanceof Error ? spawnError.message : String(spawnError);
+      logger.warn(
+        `Worker pool disabled – ${this.disableReason}. Falling back to synchronous execution.`
+      );
+    }
     this.processQueue();
   }
 
   private processQueue() {
+    if (this.disabled) {
+      while (this.queue.length > 0) {
+        const task = this.queue.shift();
+        task?.reject(new Error(this.disableReason ?? 'worker pool disabled'));
+      }
+      return;
+    }
+
     if (this.queue.length === 0) return;
 
     const freeWorker = this.workers.find((wrapper) => !wrapper.busy);

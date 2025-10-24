@@ -2,6 +2,7 @@ import type { Express } from 'express';
 import express from 'express';
 import request from 'supertest';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { DEFAULT_REPOSITORY_BASE_PATH } from '../../shared/constants.js';
 import type { QuickStartCommand, VibeTunnelConfig } from '../../types/config.js';
 import type { ConfigService } from '../services/config-service.js';
 import { createConfigRoutes } from './config.js';
@@ -74,7 +75,7 @@ describe('Config Routes', () => {
 
       expect(response.status).toBe(200);
       expect(response.body).toEqual({
-        repositoryBasePath: '~/Documents',
+        repositoryBasePath: DEFAULT_REPOSITORY_BASE_PATH,
         serverConfigured: true,
         quickStartCommands: defaultConfig.quickStartCommands,
       });

@@ -80,7 +80,7 @@ install-server: install build-npm build
 
 
 run-server:
-	NODE_ENV=production VIBETUNNEL_LOG_LEVEL=info VIBETUNNEL_MAX_EVENTSTREAM_PER_KEY=5 $(WEB_DIR)/native/vibetunnel --bind 0.0.0.0 --port 4021 --hq --no-auth --config-dir=/shared/.config/vtunnel2
+	NODE_ENV=production VIBETUNNEL_LOG_LEVEL=info VIBETUNNEL_MAX_EVENTSTREAM_PER_KEY=15 VIBETUNNEL_REDIS_URL=redis://localhost:6379 $(WEB_DIR)/native/vibetunnel --bind 0.0.0.0 --port 4021 --hq --no-auth --config-dir /shared/.config/vtunnel2
 
 run-server-cli:
 	NODE_ENV=production VIBETUNNEL_LOG_LEVEL=info $(WEB_DIR)/dist/vibetunnel-cli --bind 0.0.0.0 --port 4021 --hq --no-auth --config-dir=/shared/.config/vtunnel2
@@ -94,10 +94,7 @@ rebuild-server:
 	cd $(WEB_DIR) && CI=true $(PNPM) install
 	cd $(WEB_DIR) && $(PNPM) run build
 
-rerun-server:
-	rm -rf $(WEB_DIR)/node_modules $(WEB_DIR)/dist $(WEB_DIR)/native
-	cd $(WEB_DIR) && CI=true $(PNPM) install
-	cd $(WEB_DIR) && $(PNPM) run build
+rerun-server: rebuild-server
 	mkdir -p /shared/.config/vtunnel2
 	NODE_ENV=production VIBETUNNEL_LOG_LEVEL=info VIBETUNNEL_MAX_EVENTSTREAM_PER_KEY=15 VIBETUNNEL_REDIS_URL=redis://localhost:6379 $(WEB_DIR)/native/vibetunnel --bind 0.0.0.0 --port 4021 --hq --no-auth --config-dir /shared/.config/vtunnel2
 

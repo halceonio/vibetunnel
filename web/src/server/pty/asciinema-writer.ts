@@ -151,6 +151,13 @@ export class AsciinemaWriter {
   }
 
   /**
+   * Await completion of all queued writes so callers can observe consistent byte counters.
+   */
+  async waitForWrites(): Promise<void> {
+    await this.writeQueue.drain();
+  }
+
+  /**
    * Set a callback to be notified when pruning sequences are detected
    * @param callback Function called with sequence info and byte position
    */
